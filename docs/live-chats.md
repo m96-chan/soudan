@@ -10,18 +10,20 @@ The transport depends on the agent, because a terminal is a poor substitute for 
 | Claude Code | Linux + Kitty terminal | one-time bridge attachment |
 | Cursor Agent CLI | Linux + Kitty terminal | one-time bridge attachment |
 
+A target's id names its transport, because each agent has exactly one. Codex ids begin `codex:`, terminal-driven ids begin `kitty:`. There is no fallback between them: keystroke automation cannot reliably tell an empty composer from one holding a draft, so a Codex session whose thread cannot be read is reported as an error rather than typed into.
+
 Claude Code has its own cross-session messaging and Soudan does not use it yet; that is a possible extension, not a current feature. Cursor Agent CLI has no equivalent at all, so the terminal transport is the only way to reach it. Native Cursor editor panels, browser chats, and other terminal emulators are not supported. The existing headless plugin integrations remain available on their previously supported platforms.
 
 ## Codex sessions need no setup
 
-`soudan live list` finds the session, and Soudan resolves its thread identity from the files the process holds open. That works whether or not the session was started with `codex resume`, whose command line is the only other place the thread id appears.
+`soudan live list` finds the session, and Soudan resolves its thread identity from the files the process holds open: the thread write lock and that thread's rollout, matched by exact name. That works whether or not the session was started with `codex resume`, whose command line is the only other place the thread id appears, and it does not require the session to be running under Kitty. A process holding more than one thread lock is refused rather than guessed at.
 
 ```sh
-soudan live read kitty:900463:210017161
-soudan live send kitty:900463:210017161 \
+soudan live read codex:900463:210017161
+soudan live send codex:900463:210017161 \
   --request-id design-question-1 \
   'From Claude Code: please review this proposal.'
-soudan live read kitty:900463:210017161
+soudan live read codex:900463:210017161
 ```
 
 `read` returns structured fields rather than a screen:
@@ -35,9 +37,9 @@ soudan live read kitty:900463:210017161
 }
 ```
 
-`status` distinguishes a turn in flight from a finished one, so a reply is not mistaken for a partially rendered screen. Delivery reports `queued`, which means Codex accepted the message, not that it answered.
+`status` is `idle`, `running`, or `unknown`. It distinguishes a turn in flight from a finished one, so a reply is not mistaken for a partially rendered screen. `unknown` means no start or completion appeared in the part of the transcript that was read, which a very long turn can cause; it is not a claim that the session is free. Delivery reports `queued`, which means Codex accepted the message, not that it answered.
 
-Codex accepts a message **even while it is working**, and answers it in order. There is no draft to protect and no idle composer to wait for, so none of the terminal restrictions below apply. `codex` must be on `PATH`.
+Codex accepts a message **even while it is working**, and answers it in order. There is no draft to protect and no idle composer to wait for, so none of the terminal restrictions below apply. `codex` must be on `PATH`; when it is missing the delivery is recorded as `not_delivered` and the same request ID may be retried, because a command that never ran cannot have delivered anything.
 
 The sections below cover the Kitty transport, which Claude Code and Cursor use.
 

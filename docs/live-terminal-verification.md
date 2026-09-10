@@ -22,7 +22,7 @@ The installed setup now uses Kitty's supported per-process connection: a Ctrl+Sh
 
 The attachment has since been completed and the bridge run against the user's real sessions. Reading worked for all three agents. Sending did not, and the failures were transport-specific:
 
-- **Codex** was refused by the readiness check. Its empty composer draws the hint `Ask Codex to do anything`, and it animates braille particles across the input area, so an idle session looked like it held a draft. No send to an idle Codex could ever have succeeded through this transport. Fixed, with a regression test built from the real screen.
+- **Codex** was refused by the readiness check. Its empty composer draws the hint `Ask Codex to do anything`, and it animates braille particles across the input area, so an idle session looked like it held a draft. No send to an idle Codex could ever have succeeded through this transport. Codex now has its own transport and is no longer driven through a terminal at all, so the check is not taught these quirks: stripping the animation would also hide a draft made of the same characters.
 - **Cursor** is still broken. Its composer line begins with `→`, which is not a recognized prompt, so the reverse scan latches onto a shell prompt left in the scrollback and reports a draft. Sending to Cursor fails.
 - **Claude Code** behaved as designed; the busy guard correctly refused a session mid-turn.
 

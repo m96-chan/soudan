@@ -74,8 +74,66 @@ fn thread_state_reports_the_last_reply_and_whether_a_turn_is_running() {
     assert_eq!(running["status"], "running");
     assert_eq!(running["last_agent_message"], "done");
 
+    // No state event in range is not evidence that the session is free.
     std::fs::write(&path, "").unwrap();
     let empty = state(&path).unwrap();
-    assert_eq!(empty["status"], "idle");
+    assert_eq!(empty["status"], "unknown");
     assert!(empty["last_agent_message"].is_null());
+
+    let bulk = format!("{}\n", r#"{"type":"response_item","payload":{}}"#).repeat(8000);
+    std::fs::write(&path, format!("{started}\n{bulk}")).unwrap();
+    assert!(std::fs::metadata(&path).unwrap().len() > 262144);
+    assert_eq!(state(&path).unwrap()["status"], "unknown");
+}
+
+#[test]
+fn an_ambiguous_process_is_refused_rather_than_guessed() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path();
+    let proc = home.join("proc");
+    let other = "01a067d4-d7a6-7b41-9b9e-bc55bc0c8b75";
+    let rollout = format!("sessions/2026/09/10/rollout-2026-09-10T21-30-25-{THREAD}.jsonl");
+    std::fs::create_dir_all(home.join("sessions/2026/09/10")).unwrap();
+    std::fs::write(home.join(&rollout), "").unwrap();
+
+    // Two held locks give no basis for choosing a destination.
+    fixture(
+        &proc,
+        42,
+        home,
+        &[
+            &format!("thread-writer-locks/{THREAD}.lock"),
+            &format!("thread-writer-locks/{other}.lock"),
+            &rollout,
+        ],
+    );
+    assert!(session(&proc, 42).is_err());
+
+    // A directory named after the thread does not make a rollout that thread's.
+    let mismatched = format!("{THREAD}/sessions/rollout-2026-09-10T21-30-25-{other}.jsonl");
+    std::fs::create_dir_all(home.join(THREAD).join("sessions")).unwrap();
+    std::fs::write(home.join(&mismatched), "").unwrap();
+    fixture(
+        &proc,
+        43,
+        home,
+        &[&format!("thread-writer-locks/{THREAD}.lock"), &mismatched],
+    );
+    assert_eq!(session(&proc, 43).unwrap(), None);
+
+    // A lock outside the lock directory is not a thread lock.
+    fixture(&proc, 44, home, &[&format!("{THREAD}.lock"), &rollout]);
+    assert_eq!(session(&proc, 44).unwrap(), None);
+}
+
+#[tokio::test]
+async fn a_command_that_never_ran_stays_retryable() {
+    let dir = tempfile::tempdir().unwrap();
+    // SAFETY: the test binary is single-threaded here and restores nothing it needs.
+    unsafe { std::env::set_var("PATH", dir.path()) };
+    let failure = soudan::codex::queue(THREAD, "hello").await.unwrap_err();
+    assert!(
+        matches!(failure, soudan::codex::Failure::NotAttempted(_)),
+        "a missing binary delivered nothing, so the request id must stay reusable"
+    );
 }

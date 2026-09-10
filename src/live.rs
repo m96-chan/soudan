@@ -18,7 +18,7 @@ pub struct LiveTarget {
     pub agent: String,
     pub pid: u32,
     pub start_time: u64,
-    pub window_id: u64,
+    pub window_id: Option<u64>,
     pub tty: PathBuf,
 }
 
@@ -60,10 +60,12 @@ fn inspect(proc: &Path, workspace: &Path, pid: u32) -> Result<Option<LiveTarget>
     let window = env
         .split(|b| *b == 0)
         .find_map(|e| e.strip_prefix(b"KITTY_WINDOW_ID="));
-    let Some(window) = window else {
-        return Ok(None);
+    let window_id = match window {
+        Some(window) => Some(std::str::from_utf8(window)?.parse()?),
+        // Only agents delivered to through their terminal need a Kitty window.
+        None if agent != "codex" => return Ok(None),
+        None => None,
     };
-    let window_id = std::str::from_utf8(window)?.parse()?;
     let stat = std::fs::read_to_string(path.join("stat"))?;
     let (_, tail) = stat.rsplit_once(')').context("Malformed process stat")?;
     let start_time = tail
@@ -71,8 +73,10 @@ fn inspect(proc: &Path, workspace: &Path, pid: u32) -> Result<Option<LiveTarget>
         .nth(19)
         .context("Missing start time")?
         .parse()?;
+    // The id names the transport, because each agent has exactly one.
+    let transport = if agent == "codex" { "codex" } else { "kitty" };
     Ok(Some(LiveTarget {
-        id: format!("kitty:{pid}:{start_time}"),
+        id: format!("{transport}:{pid}:{start_time}"),
         agent: agent.into(),
         pid,
         start_time,
@@ -157,24 +161,32 @@ async fn request(workspace: &Path, request: &Request) -> Result<Value> {
         .await
         .context("Kitty bridge request timed out; do not blindly retry a send")?
 }
-/// Codex owns a session API, so terminal automation is a fallback for it, not the path.
-/// Choosing the transport up front keeps a failed native send from being retried as keystrokes.
+/// Resolve a Codex target to its session. Codex is never driven through a terminal.
+///
+/// Failing here is an error rather than a fallback: keystroke automation cannot tell
+/// an empty Codex composer from one holding a draft, so silently downgrading to it
+/// would risk submitting someone's unfinished message.
 #[cfg(target_os = "linux")]
-fn native(workspace: &Path, target: &str) -> Option<(LiveTarget, crate::codex::Session)> {
-    let t = resolve(workspace, target).ok()?;
+fn native(workspace: &Path, target: &str) -> Result<Option<(LiveTarget, crate::codex::Session)>> {
+    // An unknown id belongs to the bridge, which reports its own reason.
+    let Ok(t) = resolve(workspace, target) else {
+        return Ok(None);
+    };
     if t.agent != "codex" {
-        return None;
+        return Ok(None);
     }
-    let session = crate::codex::session(Path::new("/proc"), t.pid).ok()??;
-    Some((t, session))
+    let session = crate::codex::session(Path::new("/proc"), t.pid)?.context(
+        "Codex session exposes no readable thread; Soudan will not fall back to its terminal",
+    )?;
+    Ok(Some((t, session)))
 }
 #[cfg(not(target_os = "linux"))]
-fn native(_: &Path, _: &str) -> Option<(LiveTarget, crate::codex::Session)> {
-    None
+fn native(_: &Path, _: &str) -> Result<Option<(LiveTarget, crate::codex::Session)>> {
+    Ok(None)
 }
 
 pub async fn read(workspace: &Path, target: &str) -> Result<Value> {
-    if let Some((t, session)) = native(workspace, target) {
+    if let Some((t, session)) = native(workspace, target)? {
         let mut state = crate::codex::state(&session.rollout)?;
         state["kind"] = "codex_thread".into();
         state["thread"] = session.thread.into();
@@ -196,7 +208,7 @@ pub async fn send(workspace: &Path, target: &str, text: &str, request_id: &str) 
     );
     validate_message(text)?;
     validate_request_id(request_id)?;
-    if let Some((t, session)) = native(workspace, target) {
+    if let Some((t, session)) = native(workspace, target)? {
         return queue_to_codex(workspace, &t, &session, text, request_id).await;
     }
     request(
@@ -210,6 +222,66 @@ pub async fn send(workspace: &Path, target: &str, text: &str, request_id: &str) 
     .await
 }
 
+/// The outcome of claiming a request id.
+enum Claim {
+    /// This caller reserved the id and must attempt the delivery.
+    Reserved,
+    /// An earlier attempt already recorded this outcome; report it, do not resend.
+    Recorded(String),
+}
+
+/// Claim a request id, or report what an earlier attempt recorded for it.
+///
+/// The lookup and the reservation share one immediate transaction, so two senders
+/// racing on the same id cannot both believe they are the first. Without it the
+/// loser fails on the primary key instead of replaying the winner's result.
+fn claim(
+    db: &rusqlite::Connection,
+    request_id: &str,
+    target: &str,
+    text: &str,
+    before: &str,
+) -> Result<Claim> {
+    use rusqlite::{OptionalExtension, params};
+    db.execute_batch("BEGIN IMMEDIATE")?;
+    let claimed = (|| {
+        let previous: Option<(String, String, String)> = db
+            .query_row(
+                "SELECT target,text,status FROM live_deliveries WHERE request_id=?1",
+                [request_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()?;
+        let Some((old_target, old_text, status)) = previous else {
+            db.execute("INSERT INTO live_deliveries(request_id,target,text,status,before_screen) VALUES(?1,?2,?3,'uncertain',?4)",params![request_id,target,text,before])?;
+            return Ok(Claim::Reserved);
+        };
+        ensure!(
+            old_target == target && old_text == text,
+            "request_id was already used with different arguments"
+        );
+        // Only a recorded non-delivery is safe to retry under the same id.
+        if status != "not_delivered" {
+            return Ok(Claim::Recorded(status));
+        }
+        db.execute(
+            "UPDATE live_deliveries SET status='uncertain',error=NULL,before_screen=?2 WHERE request_id=?1",
+            params![request_id, before],
+        )?;
+        Ok(Claim::Reserved)
+    })();
+    match claimed {
+        Ok(claimed) => {
+            db.execute_batch("COMMIT")?;
+            Ok(claimed)
+        }
+        Err(error) => {
+            let _ = db.execute_batch("ROLLBACK");
+            Err(error)
+        }
+    }
+}
+
 /// Deliver through Codex's queue, recording intent exactly as the terminal path does.
 async fn queue_to_codex(
     workspace: &Path,
@@ -218,30 +290,18 @@ async fn queue_to_codex(
     text: &str,
     request_id: &str,
 ) -> Result<Value> {
-    use rusqlite::{OptionalExtension, params};
+    use rusqlite::params;
     let db = rusqlite::Connection::open(workspace.join(".soudan/state.db"))?;
     db.busy_timeout(Duration::from_secs(5))?;
     db.execute_batch(DELIVERIES)?;
-    let previous: Option<(String, String, String)> = db
-        .query_row(
-            "SELECT target,text,status FROM live_deliveries WHERE request_id=?1",
-            [request_id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-        )
-        .optional()?;
-    if let Some((old_target, old_text, status)) = previous {
-        ensure!(
-            old_target == target.id && old_text == text,
-            "request_id was already used with different arguments"
-        );
+    let before = crate::codex::state(&session.rollout)?.to_string();
+    // Commit the intent before handing the message over, so an interrupted sender
+    // leaves an uncertain record instead of silently resending later.
+    if let Claim::Recorded(status) = claim(&db, request_id, &target.id, text, &before)? {
         return Ok(
             json!({"request_id":request_id,"target":target.id,"status":status,"replayed":true}),
         );
     }
-    let before = crate::codex::state(&session.rollout)?.to_string();
-    db.execute("INSERT INTO live_deliveries(request_id,target,text,status,before_screen) VALUES(?1,?2,?3,'uncertain',?4)",params![request_id,target.id,text,before])?;
-    // Commit the intent before handing the message over, so an interrupted sender
-    // leaves an uncertain record instead of silently resending later.
     match crate::codex::queue(&session.thread, &format!("[Soudan {request_id}] {text}")).await {
         Ok(()) => {
             db.execute(
@@ -252,10 +312,16 @@ async fn queue_to_codex(
                 json!({"request_id":request_id,"target":target.id,"thread":session.thread,"status":"queued","transport":"codex_queue","next":"Read the target to verify the reply; queued means Codex accepted the message, not that it answered."}),
             )
         }
-        Err(error) => {
+        Err(failure) => {
+            // A command that never ran delivered nothing, so the id stays retryable.
+            let status = match failure {
+                crate::codex::Failure::NotAttempted(_) => "not_delivered",
+                crate::codex::Failure::Uncertain(_) => "uncertain",
+            };
+            let error = failure.into_error();
             db.execute(
-                "UPDATE live_deliveries SET error=?2 WHERE request_id=?1",
-                params![request_id, error.to_string()],
+                "UPDATE live_deliveries SET status=?2,error=?3 WHERE request_id=?1",
+                params![request_id, status, error.to_string()],
             )?;
             Err(error)
         }
@@ -347,18 +413,14 @@ pub async fn bridge(workspace: &Path) -> Result<()> {
     Ok(())
 }
 async fn handle(workspace: &Path, db: &rusqlite::Connection, req: Request) -> Result<Value> {
-    use rusqlite::{OptionalExtension, params};
+    use rusqlite::params;
     match req {
         Request::Ping => Ok(json!({"status":"ready"})),
         Request::Stop => Ok(json!({"status":"stopped"})),
         Request::Read { target } => {
             let t = resolve(workspace, &target)?;
             validate_terminal(workspace, &t)?;
-            let screen = kitty(
-                &["get-text", "--match", &format!("id:{}", t.window_id)],
-                None,
-            )
-            .await?;
+            let screen = kitty(&["get-text", "--match", &window_match(&t)?], None).await?;
             Ok(json!({"target":t,"screen":screen,"kind":"terminal_snapshot"}))
         }
         Request::Send {
@@ -368,28 +430,16 @@ async fn handle(workspace: &Path, db: &rusqlite::Connection, req: Request) -> Re
         } => {
             validate_message(&text)?;
             validate_request_id(&request_id)?;
-            let previous: Option<(String, String, String)> = db
-                .query_row(
-                    "SELECT target,text,status FROM live_deliveries WHERE request_id=?1",
-                    [&request_id],
-                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-                )
-                .optional()?;
-            if let Some((old_target, old_text, status)) = previous {
-                ensure!(
-                    old_target == target && old_text == text,
-                    "request_id was already used with different arguments"
-                );
+            let t = resolve(workspace, &target)?;
+            let match_id = window_match(&t)?;
+            validate_terminal(workspace, &t)?;
+            let before = kitty(&["get-text", "--match", &match_id], None).await?;
+            ensure_ready(&t.agent, &before)?;
+            if let Claim::Recorded(status) = claim(db, &request_id, &target, &text, &before)? {
                 return Ok(
                     json!({"request_id":request_id,"target":target,"status":status,"replayed":true}),
                 );
             }
-            let t = resolve(workspace, &target)?;
-            let match_id = format!("id:{}", t.window_id);
-            validate_terminal(workspace, &t)?;
-            let before = kitty(&["get-text", "--match", &match_id], None).await?;
-            ensure_ready(&t.agent, &before)?;
-            db.execute("INSERT INTO live_deliveries(request_id,target,text,status,before_screen) VALUES(?1,?2,?3,'uncertain',?4)",params![request_id,target,text,before])?;
             // Commit the intent before writing any keystrokes. A crashed sender
             // must never replay an uncertain delivery automatically.
             let attempt = async {
@@ -464,32 +514,6 @@ fn quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\"'\"'"))
 }
 
-/// Codex animates braille particles across its input area. They are decoration, not input.
-fn undecorate(agent: &str, line: &str) -> String {
-    match agent {
-        "codex" => line
-            .chars()
-            .filter(|c| !('\u{2800}'..='\u{28ff}').contains(c))
-            .collect(),
-        _ => line.to_string(),
-    }
-}
-
-/// Hint text an agent draws in an empty composer. It is not a draft.
-fn is_placeholder(agent: &str, prompt: &str) -> bool {
-    matches!(
-        (agent, prompt.trim()),
-        ("codex", "Ask Codex to do anything")
-    )
-}
-
-/// The status footer below Codex's composer ends its input area.
-fn ends_input_area(agent: &str, text: &str) -> bool {
-    text.starts_with("──")
-        || text.starts_with("? for shortcuts")
-        || (agent == "codex" && text.contains(" · "))
-}
-
 /// Fail closed when a terminal is busy or its input box cannot be identified.
 pub fn ensure_ready(agent: &str, screen: &str) -> Result<()> {
     let lower = screen.to_lowercase();
@@ -497,7 +521,7 @@ pub fn ensure_ready(agent: &str, screen: &str) -> Result<()> {
         !lower.contains("esc to interrupt") && !lower.contains("esc to cancel"),
         "Target is busy; wait for the current turn to finish"
     );
-    let lines: Vec<_> = screen.lines().map(|line| undecorate(agent, line)).collect();
+    let lines: Vec<_> = screen.lines().collect();
     let (index, prompt) = lines
         .iter()
         .enumerate()
@@ -513,12 +537,12 @@ pub fn ensure_ready(agent: &str, screen: &str) -> Result<()> {
             "Cannot identify an idle input prompt; inspect the target screen before sending",
         )?;
     ensure!(
-        prompt.trim().is_empty() || is_placeholder(agent, prompt),
+        prompt.trim().is_empty(),
         "Target has a draft or an unrecognized prompt; refusing to append or submit it ({agent})"
     );
     for line in &lines[index + 1..] {
         let text = line.trim();
-        if ends_input_area(agent, text) {
+        if text.starts_with("──") || text.starts_with("? for shortcuts") {
             break;
         }
         ensure!(
@@ -528,6 +552,14 @@ pub fn ensure_ready(agent: &str, screen: &str) -> Result<()> {
     }
     Ok(())
 }
+/// Kitty addresses a window, so a target without one cannot be driven this way.
+fn window_match(target: &LiveTarget) -> Result<String> {
+    let window = target
+        .window_id
+        .context("Target has no Kitty window; it cannot be reached through the terminal")?;
+    Ok(format!("id:{window}"))
+}
+
 #[cfg(target_os = "linux")]
 fn validate_terminal(workspace: &Path, t: &LiveTarget) -> Result<()> {
     validate_target(Path::new("/proc"), workspace, t)?;

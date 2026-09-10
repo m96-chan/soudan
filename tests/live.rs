@@ -65,7 +65,7 @@ fn target_validation_rejects_window_replacement_and_other_workspaces() {
     std::fs::create_dir(&proc).unwrap();
     fixture(&proc, 42, "/opt/claude/versions/2.1", dir.path(), "52");
     let mut t: LiveTarget = discover_in(&proc, dir.path()).unwrap().remove(0);
-    t.window_id = 53;
+    t.window_id = Some(53);
     assert!(validate_target(&proc, dir.path(), &t).is_err());
 }
 
@@ -131,20 +131,20 @@ async fn disconnect_cleans_up_a_crashed_bridges_stale_socket() {
 }
 
 #[test]
-fn codex_placeholder_and_particle_animation_are_not_a_draft() {
-    use soudan::live::ensure_ready;
-    // Codex draws a hint in its empty composer and animates braille particles over the area.
-    let idle = "  A previous response.\n\
-                \u{2801}       \u{2804}      \u{2800}   \u{2808}\n\
-                \u{203a}\u{2801}Ask Codex to do anything\u{2841}     \u{2802}\n\
-                     \u{2804}          \u{2820}     \u{2802}\n\
-                  gpt-6-astra medium \u{b7} ~/project/soudan \u{b7} a session title\n";
-    assert!(ensure_ready("codex", idle).is_ok());
+fn codex_is_discoverable_without_a_kitty_window() {
+    let dir = tempfile::tempdir().unwrap();
+    let proc = dir.path().join("proc");
+    std::fs::create_dir(&proc).unwrap();
+    fixture(&proc, 42, "/opt/codex/bin/codex", dir.path(), "53");
+    fixture(&proc, 43, "/opt/codex/bin/codex", dir.path(), "");
+    fixture(&proc, 44, "/opt/claude/versions/2.1", dir.path(), "");
+    std::fs::write(proc.join("43/environ"), "TERM=xterm\0").unwrap();
+    std::fs::write(proc.join("44/environ"), "TERM=xterm\0").unwrap();
 
-    // A real draft on the same screen is still refused.
-    let drafted = idle.replace("Ask Codex to do anything", "half typed question");
-    assert!(ensure_ready("codex", &drafted).is_err());
-
-    // The allowance is Codex-specific; the same text elsewhere is still a draft.
-    assert!(ensure_ready("claude-code", "\u{276f} Ask Codex to do anything\n────────").is_err());
+    let targets = discover_in(&proc, dir.path()).unwrap();
+    let ids: Vec<_> = targets.iter().map(|t| t.id.as_str()).collect();
+    // The id names the transport, and Codex is never delivered to through Kitty.
+    assert_eq!(ids, ["codex:42:12345", "codex:43:12345"]);
+    assert_eq!(targets[0].window_id, Some(53));
+    assert_eq!(targets[1].window_id, None);
 }
