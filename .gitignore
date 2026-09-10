@@ -1,0 +1,11 @@
+/target/
+/.soudan/
+/.mcp.json
+/.cursor/
+/.codex/
+/soudan.toml
+*.backup-*
+__pycache__/
+*.pyc
+/.claude/
+/.agents/

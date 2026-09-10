@@ -1,0 +1,27 @@
+[package]
+name = "soudan"
+version = "0.2.0"
+edition = "2024"
+rust-version = "1.98"
+description = "A pluggable MCP server for conversations between Claude Code, Codex, Cursor, and future AI agents"
+license = "MIT"
+repository = "https://github.com/m96-chan/soudan"
+readme = "README.md"
+keywords = ["mcp", "agents", "claude", "codex", "cursor"]
+categories = ["command-line-utilities", "development-tools"]
+exclude = [".soudan/", ".mcp.json", ".cursor/", ".codex/", "soudan.toml", ".claude/", ".agents/", "scripts/__pycache__/"]
+
+[dependencies]
+anyhow = "1.0.104"
+clap = { version = "4.6.6", features = ["derive"] }
+libc = "0.2.189"
+rmcp = { version = "3.2.0", features = ["server", "transport-io"] }
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+tokio = { version = "1.53.1", features = ["full"] }
+toml = "1.1.5"
+uuid = { version = "1.26.1", features = ["v4"] }
+
+[dev-dependencies]
+tempfile = "3.27.0"

@@ -1,0 +1,104 @@
+{
+  "date": "2026-09-10",
+  "versions": {
+    "claude-code": "2.1.267",
+    "codex": "0.153.4",
+    "cursor-agent": "2026.09.08-6caf4ff"
+  },
+  "adapter_dialogue": [
+    {
+      "agent": "claude-code",
+      "room": "initial-design",
+      "prompt": "We are building soudan, an OSS Rust MCP server connecting Claude Code, Codex, and Cursor. It provides configurable CLI plugins, asynchronous consultation jobs, persistent SQLite conversation rooms, and message polling for existing editor sessions. In under 180 words, identify the two most important interoperability pitfalls and propose how Cursor and Codex should respond to your recommendations. Do not use tools or modify files.",
+      "result": "**Pitfall 1 — Assuming push works everywhere.** MCP clients diverge sharply on server-initiated notifications, progress, and long tool timeouts. If job completion depends on notifications, some editors will silently hang. Design polling as the contract and treat notifications as an optional accelerant: every consultation returns a `job_id` immediately, tools stay short-lived and idempotent, and cursor-based `since` tokens (not wall-clock) drive `poll_messages`.\n\n**Pitfall 2 — No shared identity across clients.** Each editor has its own session lifetime and no stable agent ID, so rooms fragment, duplicate on retry, or collide when two agents write concurrently. Require an explicit `participant_id` + client-supplied idempotency key on every post, and configure SQLite for WAL with `busy_timeout` so concurrent writers don't surface as opaque `SQLITE_BUSY` errors.\n\n**What we need back from Cursor and Codex:**\n- Confirm your real capability matrix — notifications, progress, sampling, elicitation — and your hard tool-call timeout.\n- State whether you deduplicate retried tool calls, or whether soudan must.\n- Tell us what stable identifier you can supply per session, and whether it survives editor restarts.\n\nDisagreement on any of these should be raised before we freeze the schema.",
+      "status": "completed"
+    },
+    {
+      "agent": "cursor",
+      "room": "initial-design",
+      "prompt": "Respond to Claude Code’s preceding recommendations. In under 160 words, challenge or refine the proposed polling and identity contracts. Do not claim client capabilities you cannot verify. Propose one acceptance test for Codex to assess. Do not use tools or modify files.",
+      "result": "**Polling:** Treating poll-as-contract is right; don’t freeze “cursor `since` tokens” as the only shape. Opaque, opaque-to-clients cursors are fine, but rooms should also expose a monotonic `seq` (or `(room_id, seq)`) so a crashed client can resync without inventing wall-clock semantics. Jobs should return `job_id` *and* an initial cursor/seq so the first poll isn’t a guess. Keep tools short and idempotent; don’t assume notifications arrive.\n\n**Identity:** `participant_id` + idempotency key is necessary but incomplete. Prefer a server-minted `room_id` on create, and bind posts to `(room_id, participant_id, idempotency_key)`—client-only IDs won’t survive restarts reliably across editors. WAL + `busy_timeout` is good; also document conflict semantics (last-write-wins vs reject duplicate).\n\nI won’t assert Cursor’s notification/timeout/dedupe matrix here—verify against the live MCP client before schema freeze.\n\n**Codex acceptance test:** Start a consultation, kill the Codex session mid-job, reopen with the same configured `participant_id`, `poll_messages` from the last returned cursor/seq, and assert no duplicate posts and full catch-up of completion messages.",
+      "status": "completed"
+    },
+    {
+      "agent": "codex",
+      "room": "initial-design",
+      "prompt": "Assess Claude Code and Cursor’s preceding exchange. In under 160 words, name the minimum changes required before an initial OSS release and refine Cursor’s reconnect acceptance test. We already persist monotonic message IDs and detached consultation workers in SQLite, with a one-active-job-per-room guard. Do not use tools, browse, or modify files.",
+      "result": "Claude Code’s polling baseline is sound; Cursor’s extra sequence field is unnecessary if persisted message IDs already provide room-filtered ordering. Detached workers and the one-active-job guard also cover part of the proposed design.\n\nMinimum release changes:\n\n- Define polling precisely: exclusive `after_message_id`, ordered pagination, and a continuation value that cannot skip unread messages. Persist terminal job status so reconnects can distinguish failure from pending work.\n- Document participant-ID persistence and recovery. A server-minted room ID alone does not restore participant identity.\n- Make submission retries atomic using `(room_id, participant_id, idempotency_key)`: identical retries return the original job; changed payloads are rejected. The active-job guard alone cannot prevent duplicates after completion.\n\nRefine the test: submit a job, drop its response, disconnect the client while the worker continues, then reconnect with persisted identity and retry the same key. Assert the same job ID, one execution, complete paginated catch-up from the last **processed** message ID, and terminal status. Replayed messages must be safely deduplicated.\n",
+      "status": "completed"
+    }
+  ],
+  "claude_mcp_client": {
+    "is_error": false,
+    "permission_denials": [],
+    "summary": "Test passed end to end.\n\n- `soudan_agents`: three agents available — claude-code, codex, cursor.\n- Greeting posted as message id 8.\n- `soudan_consult` returned job `1e794274…` queued; polled 6 times (running → completed).\n- `soudan_history` shows exactly 3 messages: my greeting (8), the prompt echoed as `requester` (9), cursor's reply (10).\n\nCursor's reply: greets back, then proposes testing dialogue reliability by sending a question followed by a contradictory follow-up and scoring whether the agent revises rather than repeats.",
+    "messages": [
+      {
+        "id": 8,
+        "room": "live-mcp-test",
+        "sender": "claude-code",
+        "text": "Hello from claude-code — starting a live MCP integration test in this room."
+      },
+      {
+        "id": 9,
+        "room": "live-mcp-test",
+        "sender": "requester",
+        "text": "Reply to my greeting and name one concrete test for reliable agent dialogue in under 70 words."
+      },
+      {
+        "id": 10,
+        "room": "live-mcp-test",
+        "sender": "cursor",
+        "text": "Hello from cursor — glad the room is live.\n\nOne concrete test: send a short question, then a contradictory follow-up; score whether the agent revises its answer with the new constraint instead of repeating the first reply."
+      }
+    ]
+  },
+  "cursor_mcp_client": {
+    "is_error": false,
+    "result": "I'll use only the Soudan MCP tools: first discover their schemas, then read `live-mcp-test` and post the reply.Posting a short reply that references the greeting and Cursor’s prior answer.**Post succeeded.**\n\nRoom `live-mcp-test` history included claude-code’s greeting, the requester prompt, cursor’s constraint-revision answer, and a later codex-client note. Posted as `cursor-client` with `request_id` `cursor-client-reply-1`; Soudan returned message **id 18**."
+  },
+  "codex_mcp_client": {
+    "result": "Post succeeded in `live-mcp-test` as `codex-client` using request ID `codex-client-reply-1`. Message ID: `17`."
+  },
+  "shared_mcp_room": [
+    {
+      "id": 8,
+      "room": "live-mcp-test",
+      "sender": "claude-code",
+      "text": "Hello from claude-code — starting a live MCP integration test in this room."
+    },
+    {
+      "id": 9,
+      "room": "live-mcp-test",
+      "sender": "requester",
+      "text": "Reply to my greeting and name one concrete test for reliable agent dialogue in under 70 words."
+    },
+    {
+      "id": 10,
+      "room": "live-mcp-test",
+      "sender": "cursor",
+      "text": "Hello from cursor — glad the room is live.\n\nOne concrete test: send a short question, then a contradictory follow-up; score whether the agent revises its answer with the new constraint instead of repeating the first reply."
+    },
+    {
+      "id": 17,
+      "room": "live-mcp-test",
+      "sender": "codex-client",
+      "text": "Hello claude-code and cursor! Cursor’s constraint-revision test is useful. Another concrete reliability test: retry a post with the same request_id and verify that room history contains exactly one message, confirming retries do not duplicate dialogue."
+    },
+    {
+      "id": 18,
+      "room": "live-mcp-test",
+      "sender": "cursor-client",
+      "text": "Thanks claude-code for the greeting — agreeing with cursor’s constraint-revision check as a solid dialogue reliability test."
+    }
+  ],
+  "smoke_script": {
+    "passed": true,
+    "room": "smoke-aed2e911-78b6-4fa1-9ce5-10ad6212e572",
+    "agents": [
+      "claude-code",
+      "cursor",
+      "codex"
+    ]
+  }
+}
