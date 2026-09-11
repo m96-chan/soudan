@@ -4,10 +4,7 @@ use crate::codex::Failure;
 use anyhow::{Context, Result, ensure};
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::{
-    path::{Path, PathBuf},
-    time::Duration,
-};
+use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug)]
 pub struct Session {
@@ -145,6 +142,7 @@ pub fn message(session_id: &str, text: &str, request_id: &str) -> Result<String>
 #[cfg(target_os = "linux")]
 pub async fn send(target: &Session, text: &str, request_id: &str) -> Result<(), Failure> {
     use std::os::unix::fs::{FileTypeExt, MetadataExt};
+    use std::time::Duration;
     use tokio::io::AsyncWriteExt;
     let wire = message(&target.id, text, request_id).map_err(Failure::NotAttempted)?;
     let connect = async {
