@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Soudan · Conversation monitor</title><link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script></head>
+<body>
+<header><div><span class="eyebrow">SOUDAN</span><h1>Conversation monitor</h1><p>See what was sent, what was received, and what needs attention.</p></div><div class="connection"><span class="local">127.0.0.1 · Read only</span><p id="updated" role="status">Connecting…</p></div></header>
+<main>
+<div id="error" class="error" role="alert" hidden></div>
+<div class="summary" id="summary" aria-label="Delivery receipt counts"></div>
+<section aria-labelledby="deliveries-title"><div class="section-head"><div><h2 id="deliveries-title">Deliveries</h2><p>Sender status records the handoff. Receipt records the evidence.</p></div><span id="delivery-count" class="count"></span></div>
+<div class="table-wrap"><table><thead><tr><th>Request / destination</th><th>Sender status</th><th>Receipt</th><th>Evidence / next step</th></tr></thead><tbody id="deliveries"></tbody></table></div>
+<p id="delivery-empty" class="empty" hidden>No deliveries recorded in this workspace.</p>
+<p class="note">Taken means a marker appeared in the recipient log, not that the agent answered. Waiting can include a Claude message held for human review. Unknown is inconclusive.</p>
+</section>
+<div class="columns"><section aria-labelledby="rooms-title"><div class="section-head"><div><h2 id="rooms-title">Rooms</h2><p>Messages between collaborating agents</p></div></div><label for="room">Conversation</label><select id="room"></select><div class="message-tools"><button id="latest" type="button">Latest messages</button><button id="older" type="button" disabled>Older messages</button><span id="room-status" role="status"></span></div><div id="messages" class="messages"></div></section>
+<section aria-labelledby="jobs-title"><div class="section-head"><div><h2 id="jobs-title">Consultation jobs</h2><p>Recorded job states</p></div><span id="job-count" class="count"></span></div><div id="jobs"></div></section></div>
+<nav class="pagination" aria-label="Delivery and job pages"><button id="previous" disabled>Newer records</button><span id="page">Page 1</span><button id="next" disabled>Older records</button></nav>
+</main><footer>No authentication. Anyone with access to this local port can view these records. Updates automatically about every 4 seconds. No sending or retry controls.</footer>
+</body></html>

@@ -13,3 +13,4 @@ pub mod codex;
 pub mod live;
 pub mod receipt;
 pub mod wait;
+pub mod web;

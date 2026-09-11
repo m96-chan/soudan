@@ -129,3 +129,15 @@ These read-only waits return JSON and exit on an observation (0), timeout (124),
 or runtime error (1). Defaults and limits, cursor handling, background wake-up
 requirements and the proposed direct inbox route are in [Waiting for another
 agent](docs/waiting.md).
+
+### Local dashboard
+
+```sh
+soudan web --port 8765
+```
+
+Open `http://127.0.0.1:8765` to view deliveries and derived receipts, room messages,
+and consultation jobs on an automatically updating page. The server is read-only,
+requires an explicit port and binds only to 127.0.0.1. **It has no authentication:**
+anyone with access to that local port can read the displayed workspace records.
+See [dashboard setup, limits and verification](docs/web.md).

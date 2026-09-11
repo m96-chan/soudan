@@ -19,6 +19,13 @@ struct Cli {
 }
 #[derive(Subcommand)]
 enum Commands {
+    /// Open a read-only dashboard on 127.0.0.1 only. No default port.
+    Web {
+        #[arg(long)]
+        port: u16,
+    },
+    #[command(hide = true)]
+    WebObserver { query: String },
     /// Wait for room messages without consuming them (exit 0 event, 124 timeout, 1 error).
     Wait {
         #[arg(long)]
@@ -103,6 +110,18 @@ enum LiveCommands {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+    if let Commands::Web { port } = &cli.command {
+        return soudan::web::serve(&cli.workspace, *port).await;
+    }
+    if let Commands::WebObserver { query } = &cli.command {
+        let result = serde_json::from_str(query)
+            .map_err(anyhow::Error::from)
+            .and_then(|q| soudan::web::snapshot(&cli.workspace, q));
+        let value =
+            result.unwrap_or_else(|e| serde_json::json!({"observer_error":format!("{e:#}")}));
+        println!("{}", serde_json::to_string(&value)?);
+        return Ok(());
+    }
     // Waits must bypass App::open: it creates state and enables WAL.
     let waiting = match &cli.command {
         Commands::Wait {
@@ -157,7 +176,10 @@ async fn main() -> Result<()> {
     }
     let app = App::open(&cli.workspace, cli.config.as_deref())?;
     let value = match cli.command {
-        Commands::Wait { .. } | Commands::WaitObserver { .. } => unreachable!(),
+        Commands::Web { .. }
+        | Commands::WebObserver { .. }
+        | Commands::Wait { .. }
+        | Commands::WaitObserver { .. } => unreachable!(),
         Commands::Serve => {
             soudan::mcp::Mcp { app }
                 .serve(rmcp::transport::stdio())
