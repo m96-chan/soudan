@@ -124,13 +124,22 @@ pub fn for_target(_: &Path, _: &crate::live::LiveTarget) -> Result<Session> {
 }
 
 pub fn message(session_id: &str, text: &str, request_id: &str) -> Result<String> {
+    message_as(session_id, text, request_id, None)
+}
+pub fn message_as(
+    session_id: &str,
+    text: &str,
+    request_id: &str,
+    sender: Option<&str>,
+) -> Result<String> {
     uuid::Uuid::parse_str(session_id)?;
     crate::live::validate_message(text)?;
     crate::live::validate_request_id(request_id)?;
-    let text = text.replace('&', "&amp;").replace('<', "&lt;");
-    let content = format!(
-        "<cross-session-message from-name=\"Soudan\">\n[Soudan {request_id}] {text}\n</cross-session-message>"
-    );
+    let text = crate::live::prompt(request_id, text, sender)?
+        .replace('&', "&amp;")
+        .replace('<', "&lt;");
+    let content =
+        format!("<cross-session-message from-name=\"Soudan\">\n{text}\n</cross-session-message>");
     Ok(format!(
         "{}\n",
         json!({"msgV":1,"msg_id":uuid::Uuid::new_v4().to_string(),"session_id":session_id,
@@ -140,11 +149,16 @@ pub fn message(session_id: &str, text: &str, request_id: &str) -> Result<String>
 
 /// A completed write is submitted, never an assertion of receipt or policy acceptance.
 #[cfg(target_os = "linux")]
-pub async fn send(target: &Session, text: &str, request_id: &str) -> Result<(), Failure> {
+pub async fn send_as(
+    target: &Session,
+    text: &str,
+    request_id: &str,
+    sender: Option<&str>,
+) -> Result<(), Failure> {
     use std::os::unix::fs::{FileTypeExt, MetadataExt};
     use std::time::Duration;
     use tokio::io::AsyncWriteExt;
-    let wire = message(&target.id, text, request_id).map_err(Failure::NotAttempted)?;
+    let wire = message_as(&target.id, text, request_id, sender).map_err(Failure::NotAttempted)?;
     let connect = async {
         let meta = std::fs::symlink_metadata(&target.socket)?;
         ensure!(
@@ -186,7 +200,7 @@ pub async fn send(target: &Session, text: &str, request_id: &str) -> Result<(), 
     .map_err(|e| Failure::Uncertain(e.into()))
 }
 #[cfg(not(target_os = "linux"))]
-pub async fn send(_: &Session, _: &str, _: &str) -> Result<(), Failure> {
+pub async fn send_as(_: &Session, _: &str, _: &str, _: Option<&str>) -> Result<(), Failure> {
     Err(Failure::NotAttempted(anyhow::anyhow!(
         "Claude native delivery currently requires Linux"
     )))
@@ -231,4 +245,8 @@ pub fn state(target: &Session) -> Result<Value> {
         json!({"kind":"claude_session","session":target.id,"status":target.status,
         "last_agent_message":last,"transcript_available":transcript_available}),
     )
+}
+
+pub async fn send(target: &Session, text: &str, request_id: &str) -> Result<(), Failure> {
+    send_as(target, text, request_id, None).await
 }

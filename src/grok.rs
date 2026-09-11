@@ -262,6 +262,15 @@ impl Leader {
 /// Everything before the prompt leaves this process is a failure that provably
 /// delivered nothing. Once it is written, no error can prove otherwise.
 pub async fn send(session: &Session, text: &str, request_id: &str) -> Result<(), Failure> {
+    send_as(session, text, request_id, None).await
+}
+pub async fn send_as(
+    session: &Session,
+    text: &str,
+    request_id: &str,
+    sender: Option<&str>,
+) -> Result<(), Failure> {
+    let text = crate::live::prompt(request_id, text, sender).map_err(Failure::NotAttempted)?;
     let work = async {
         let mut leader = Leader::connect(&session.leader).await?;
         leader
@@ -319,7 +328,7 @@ pub async fn send(session: &Session, text: &str, request_id: &str) -> Result<(),
     };
     let prompt = json!({
         "sessionId": session.id,
-        "prompt": [{"type":"text","text":format!("[Soudan {request_id}] {text}")}],
+        "prompt": [{"type":"text","text":text}],
     });
     match tokio::time::timeout(
         Duration::from_secs(30),

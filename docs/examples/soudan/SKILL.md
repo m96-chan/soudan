@@ -5,7 +5,7 @@ description: Consult another AI agent through the Soudan MCP tools, or exchange 
 
 # Soudan consultation
 
-When the user asks to talk in an **already-open chat**, use `soudan_live_targets` and identify the intended session. Read it with `soudan_live_read`, then send with `soudan_live_send` using its exact target ID and a unique request ID. Claude Code targets (`claude:`) use their native inbox; Codex targets (`codex:`) use the session queue. Both accept a message mid-turn, so neither has to be idle. Cursor is not a live target. See `docs/live-chats.md`. Do not silently substitute a new headless session for a requested existing chat.
+When the user asks to talk in an **already-open chat**, use `soudan_live_targets` and identify the intended session. Read it with `soudan_live_read`, then send with `soudan_live_send` using its exact target ID, a unique request ID, and your agent name as `sender`. The sender is a declaration, not verified provenance; preserve earlier relay origins in the body. Claude Code targets (`claude:`) use their native inbox; Codex targets (`codex:`) use the session queue. Both accept a message mid-turn, so neither has to be idle. Cursor is not a live target. See `docs/live-chats.md`. Do not silently substitute a new headless session for a requested existing chat.
 
 After sending, inspect `receipt.status` and call `soudan_live_delivery` with the request ID to refresh it. `taken` means the marker appears in the recipient log, not that a reply exists; quoted markers can be false positives. `blocked` needs human interaction, `lost` means the original process is gone without a marker in the covered log, and `unknown` is inconclusive (including legacy rows and Cursor). Do not automatically resend based on any receipt.
 

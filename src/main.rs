@@ -107,6 +107,8 @@ enum LiveCommands {
     Send {
         target: String,
         #[arg(long)]
+        sender: Option<String>,
+        #[arg(long)]
         request_id: String,
         text: String,
     },
@@ -213,10 +215,20 @@ async fn main() -> Result<()> {
             LiveCommands::List => serde_json::to_value(soudan::live::discover(&app.workspace)?)?,
             LiveCommands::Read { target } => soudan::live::read(&app.workspace, &target).await?,
             LiveCommands::Send {
+                sender,
                 target,
                 request_id,
                 text,
-            } => soudan::live::send(&app.workspace, &target, &text, &request_id).await?,
+            } => {
+                soudan::live::send_as(
+                    &app.workspace,
+                    &target,
+                    &text,
+                    &request_id,
+                    sender.as_deref(),
+                )
+                .await?
+            }
         },
         Commands::Doctor => app.agents(),
         Commands::Consult {

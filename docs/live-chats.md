@@ -218,3 +218,20 @@ Grok, not a published contract, so this adapter is experimental. It checks
 agent to advertise `sessionCapabilities.resume`. It was inspected against Grok
 Build 1.0.25. There is no fallback transport: a protocol change makes Grok
 delivery unavailable until the adapter is updated.
+
+## Declared sender
+
+Use `soudan live send <target> --request-id <id> --sender codex 'Message'`, or
+MCP `soudan_live_send` with `sender: "codex"`. The wire prefix retains
+`[Soudan <id>]` and adds `Declared sender: codex (unverified)`. Omission produces
+`unspecified`; Soudan never guesses from process settings or the recipient.
+Labels use the request ID character set and length limit. The raw message and
+nullable sender are recorded separately; retrying an ID with a different sender
+is rejected, and legacy NULL senders remain compatible with omitted senders.
+
+This is a caller declaration, not authenticated provenance, a human instruction,
+or a permission assertion. It does not bind an originating session to this body
+and destination. Claude's `from-mode` and inbound policy remain unchanged. A relay
+must preserve earlier origins in its body and declare only its immediate sender;
+this label cannot authenticate a multi-hop history. Delivery results expose the
+sender through `live delivery`, with `sender_verification: unverified_declaration`.
