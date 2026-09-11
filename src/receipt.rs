@@ -40,6 +40,68 @@ impl Basis {
         anyhow::bail!("Receipt evidence requires Unix file identity")
     }
 
+    /// Read complete structured events after a stable send-time boundary.
+    #[cfg(unix)]
+    pub fn events_since(&self, expected_path: &Path) -> Result<Vec<Value>> {
+        use std::os::unix::fs::MetadataExt;
+        ensure!(self.path == expected_path, "Receipt path mismatch");
+        let mut file = File::open(&self.path)?;
+        let meta = file.metadata()?;
+        ensure!(
+            meta.is_file()
+                && meta.dev() == self.device
+                && meta.ino() == self.inode
+                && meta.len() >= self.offset,
+            "Evidence was replaced or truncated"
+        );
+        ensure!(
+            meta.len() - self.offset <= 16 * 1024 * 1024,
+            "Receipt scan exceeds 16 MiB"
+        );
+        ensure!(
+            self.anchor.len() as u64 <= self.offset,
+            "Invalid receipt anchor"
+        );
+        ensure!(
+            self.offset == 0 || self.anchor.last() == Some(&b'\n'),
+            "Receipt boundary splits an event"
+        );
+        file.seek(SeekFrom::Start(self.offset - self.anchor.len() as u64))?;
+        let mut anchor = vec![0; self.anchor.len()];
+        file.read_exact(&mut anchor)?;
+        ensure!(anchor == self.anchor, "Evidence changed before send offset");
+        let mut bytes = vec![0; (meta.len() - self.offset) as usize];
+        file.read_exact(&mut bytes)?;
+        let end = bytes
+            .iter()
+            .rposition(|b| *b == b'\n')
+            .map(|i| i + 1)
+            .unwrap_or(0);
+        let events = bytes[..end]
+            .split(|b| *b == b'\n')
+            .filter(|b| !b.is_empty())
+            .map(serde_json::from_slice)
+            .collect::<serde_json::Result<Vec<Value>>>()?;
+        let current = std::fs::metadata(&self.path)?;
+        ensure!(
+            current.dev() == self.device
+                && current.ino() == self.inode
+                && current.len() >= meta.len(),
+            "Evidence changed during observation"
+        );
+        file.seek(SeekFrom::Start(self.offset - self.anchor.len() as u64))?;
+        file.read_exact(&mut anchor)?;
+        ensure!(
+            anchor == self.anchor,
+            "Evidence anchor changed during observation"
+        );
+        Ok(events)
+    }
+    #[cfg(not(unix))]
+    pub fn events_since(&self, _: &Path) -> Result<Vec<Value>> {
+        anyhow::bail!("Receipt evidence requires Unix file identity")
+    }
+
     #[cfg(unix)]
     fn contains(&self, marker: &[u8]) -> Result<bool> {
         use std::os::unix::fs::MetadataExt;

@@ -79,7 +79,7 @@ soudan live send <TARGET_ID> --request-id hello-1 'Hello from the other agent. P
 soudan live read <TARGET_ID>
 ```
 
-Grok uses its shared leader; OpenCode uses its published HTTP session API. See [OpenCode setup and receipts](docs/opencode.md) for loopback startup, authentication, and API reply reading. Live sends accept `--sender codex`, an explicitly unverified sender label.
+Grok uses its shared leader; OpenCode uses its published HTTP session API. Copilot uses its TUI JSON-RPC server; start it with `copilot --ui-server --host 127.0.0.1 --port 4097` (see [Copilot setup](docs/copilot.md)). See [OpenCode setup and receipts](docs/opencode.md) for loopback startup, authentication, and API reply reading. Live sends accept `--sender codex`, an explicitly unverified sender label.
 
 Cursor is not a live target. Its terminal transport has been removed; its ACP interface does not attach to an already-running chat. `soudan consult --agent cursor` is unaffected.
 
