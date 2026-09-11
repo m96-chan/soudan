@@ -21,6 +21,56 @@ Coverage includes:
 
 Fixtures use Unix executables such as `cat`, `sleep`, and `sh`, and temporary directories. No provider login or paid model invocation is part of `cargo test`. CI targets Linux and macOS; Windows support remains unvalidated.
 
+## Reproducing a macOS failure from Linux
+
+CI runs the deterministic suite on Linux and macOS. Two classes of macOS-only
+failure have reached `main`, and neither needs a Mac to reproduce. Cross
+compiling is not the answer: `cargo clippy --target aarch64-apple-darwin` fails
+while building the vendored SQLite in `libsqlite3-sys`, which needs a macOS C
+toolchain. Simulate the two conditions separately instead.
+
+**Platform-gated compilation.** Delivery adapters are `#[cfg(target_os =
+"linux")]`, and several test files are gated at the file level, so macOS
+compiles different code and runs a smaller suite. Rewrite the gate to another
+operating system name to compile what macOS compiles, in both `src` and
+`tests`:
+
+```sh
+sed -i 's/target_os = "linux"/target_os = "freebsd"/g' src/*.rs tests/*.rs
+cargo clippy --locked --all-targets -- -D warnings
+cargo test --locked
+git checkout -- src tests
+```
+
+Use a real target name. An invented one trips the `unexpected_cfgs` lint and
+buries the failure you were looking for. `cfg(unix)` stays true, as on macOS.
+**Commit or copy your work first:** the `git checkout` that ends the
+simulation discards uncommitted changes in those directories.
+
+This catches unused imports that only appear when the Linux-only code is gone.
+An unused `std::time::Duration` in `src/claude.rs` failed the macOS Clippy step
+this way, and because Clippy runs before the test step, it hid every macOS test
+result until it was fixed.
+
+**Path canonicalization.** macOS resolves `TMPDIR` through `/var`, a symbolic
+link to `/private/var`, so a temporary path and its canonical form differ.
+Linux temporary paths canonicalize to themselves, which hides any assertion
+that compares a recorded absolute path against a raw one. Point `TMPDIR` at a
+symbolic link to reproduce it:
+
+```sh
+mkdir -p /short/path/real && ln -s /short/path/real /short/path/link
+TMPDIR=/short/path/link cargo test --locked
+```
+
+Keep that path short. A Unix socket address is limited to about 104 bytes, so a
+long `TMPDIR` fails the socket tests for a reason that has nothing to do with
+macOS. This condition caught
+`installer_carries_explicit_plugin_configuration_into_clients`, which compared
+the `--config` path the installer records, canonicalized, against the raw
+temporary path. The fix belonged in the expectation, not in the assertion:
+canonicalize the expected path and keep checking that it reaches the client.
+
 ## Live adapter dialogue
 
 After installing and authenticating the CLIs:

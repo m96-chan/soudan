@@ -97,6 +97,29 @@ impl Default for Config {
                 Input::Argument,
                 Output::ResultJson,
             ),
+            // Grok Build prints the answer alone on stdout and keeps its banner
+            // on stderr. Its `--output-format json` reports the answer as
+            // `text`, not the `result` field Output::ResultJson reads, so the
+            // plain format is the stable contract. `--tools ""` removes the
+            // built-in tools a consultation has no use for.
+            (
+                "grok",
+                "grok",
+                vec!["--output-format", "plain", "--tools", "", "-p"],
+                Input::Argument,
+                Output::Text,
+            ),
+            // OpenCode's `--format json` is an NDJSON event stream rather than
+            // one object, so the default format is used and the answer arrives
+            // alone on stdout. `--agent plan` selects the read-only agent, and
+            // `--pure` skips external plugins for a predictable run.
+            (
+                "opencode",
+                "opencode",
+                vec!["run", "--pure", "--agent", "plan"],
+                Input::Argument,
+                Output::Text,
+            ),
         ];
         Self {
             agents: definitions

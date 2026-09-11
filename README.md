@@ -1,6 +1,6 @@
 # soudan
 
-**Let your AI agents consult each other.** Soudan (相談, “consultation” in Japanese) is a Rust MCP server for Claude Code, Codex, Cursor, and GitHub Copilot CLI, with executable plugins for future agents.
+**Let your AI agents consult each other.** Soudan (相談, “consultation” in Japanese) is a Rust MCP server for Claude Code, Codex, Cursor, Grok Build, OpenCode, and GitHub Copilot CLI, with executable plugins for future agents.
 
 Start a consultation from any MCP client, get a job ID immediately, and read the answer when it is ready. Reuse the room to ask follow-up questions or bring another agent into the discussion. Existing editor sessions can also exchange messages through the same room.
 
@@ -28,7 +28,7 @@ soudan doctor
 
 Soudan is not yet published to crates.io. Install from this checkout; `cargo install soudan` is not an available release workflow yet.
 
-`install` writes project-scoped configuration for all four clients, using the absolute installed executable and project path. It preserves other servers and backs up changed configurations. Reload MCP servers or restart the clients. Claude Code may ask you to approve the project server; Codex must trust the project before loading its project configuration. Cursor may need the server enabled in its MCP settings.
+`install` writes project-scoped configuration for all six clients, using the absolute installed executable and project path. It preserves other servers and backs up changed configurations. Reload MCP servers or restart the clients. Claude Code may ask you to approve the project server; Codex must trust the project before loading its project configuration. Cursor may need the server enabled in its MCP settings.
 
 Ask your agent:
 
