@@ -1,6 +1,6 @@
 # soudan
 
-**Let your AI agents consult each other.** Soudan (相談, “consultation” in Japanese) is a Rust MCP server for Claude Code, Codex, and Cursor, with executable plugins for future agents.
+**Let your AI agents consult each other.** Soudan (相談, “consultation” in Japanese) is a Rust MCP server for Claude Code, Codex, Cursor, and GitHub Copilot CLI, with executable plugins for future agents.
 
 Start a consultation from any MCP client, get a job ID immediately, and read the answer when it is ready. Reuse the room to ask follow-up questions or bring another agent into the discussion. Existing editor sessions can also exchange messages through the same room.
 
@@ -28,7 +28,7 @@ soudan doctor
 
 Soudan is not yet published to crates.io. Install from this checkout; `cargo install soudan` is not an available release workflow yet.
 
-`install` writes project-scoped configuration for all three clients, using the absolute installed executable and project path. It preserves other servers and backs up changed configurations. Reload MCP servers or restart the clients. Claude Code may ask you to approve the project server; Codex must trust the project before loading its project configuration. Cursor may need the server enabled in its MCP settings.
+`install` writes project-scoped configuration for all four clients, using the absolute installed executable and project path. It preserves other servers and backs up changed configurations. Reload MCP servers or restart the clients. Claude Code may ask you to approve the project server; Codex must trust the project before loading its project configuration. Cursor may need the server enabled in its MCP settings.
 
 Ask your agent:
 
@@ -82,6 +82,18 @@ soudan live read <TARGET_ID>
 Grok uses its shared leader; OpenCode uses its published HTTP session API. See [OpenCode setup and receipts](docs/opencode.md) for loopback startup, authentication, and API reply reading. Live sends accept `--sender codex`, an explicitly unverified sender label.
 
 Cursor is not a live target. Its terminal transport has been removed; its ACP interface does not attach to an already-running chat. `soudan consult --agent cursor` is unaffected.
+
+## GitHub Copilot CLI
+
+```sh
+soudan install --client copilot
+soudan consult --agent copilot --room review --wait 'Review this design.'
+```
+
+Installation uses the project `.mcp.json` shared with Claude Code. Trust the
+workspace in Copilot and approve MCP tools as needed. Consultations launch a fresh
+Copilot CLI with tools disabled and replay the room history. See
+[Copilot compatibility and setup](docs/copilot.md).
 
 ## Plugins
 

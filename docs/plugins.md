@@ -2,7 +2,7 @@
 
 Plugins are trusted executable adapters configured in TOML. They run out of process, so a future agent can be added without linking Rust code, matching a Rust ABI, or rebuilding Soudan. The plugin boundary is `command + args + input + output`; built-in agents use the same boundary as third-party agents.
 
-Soudan loads `WORKSPACE/soudan.toml` automatically. `--config /path/to/file.toml` selects another file. Restart MCP connections after changing configuration. Custom entries extend the three built-ins; an entry with a built-in name **replaces the entire definition**, rather than merging individual fields.
+Soudan loads `WORKSPACE/soudan.toml` automatically. `--config /path/to/file.toml` selects another file. Restart MCP connections after changing configuration. Custom entries extend the built-ins; an entry with a built-in name **replaces the entire definition**, rather than merging individual fields.
 
 ```toml
 [agents.local-reviewer]
@@ -25,7 +25,7 @@ The plugin runs in the selected workspace, inheriting the host environment for a
 
 ## Built-in definitions
 
-These defaults were verified against the locally installed CLIs on 2026-09-10:
+These defaults were verified against the locally installed CLIs on 2026-09-11:
 
 ```toml
 [agents.claude-code]
@@ -40,6 +40,12 @@ args = ["exec", "--ephemeral", "--sandbox", "read-only", "--color", "never", "-"
 input = "stdin"
 output = "text"
 
+[agents.copilot]
+command = "copilot"
+args = ["--silent", "--stream=off", "--available-tools=", "--disable-builtin-mcps", "--no-ask-user", "--no-auto-update", "--no-custom-instructions", "--prompt"]
+input = "argument"
+output = "text"
+
 [agents.cursor]
 command = "cursor-agent"
 args = ["-p", "--mode", "ask", "--output-format", "json", "--trust"]
@@ -47,7 +53,7 @@ input = "argument"
 output = "result_json"
 ```
 
-Claude Code gets no built-in tools or inherited MCP configuration. Codex uses read-only sandbox mode, and Cursor uses ask mode. All receive an instruction to discuss without running commands or editing files. Codex and Cursor can still load client-specific configuration and extensions. These flags do not turn arbitrary third-party plugins into isolated sandboxes. Cursor's `--trust` trusts the selected workspace for this invocation, avoiding an interactive workspace prompt; it is not `--force` or blanket MCP approval.
+Copilot uses an empty tool allowlist, disables built-in MCP servers, custom instructions, interactive questions, and automatic updates, and returns plain response text. Claude Code gets no built-in tools or inherited MCP configuration. Codex uses read-only sandbox mode, and Cursor uses ask mode. All receive an instruction to discuss without running commands or editing files. Codex and Cursor can still load client-specific configuration and extensions. These flags do not turn arbitrary third-party plugins into isolated sandboxes. Cursor's `--trust` trusts the selected workspace for this invocation, avoiding an interactive workspace prompt; it is not `--force` or blanket MCP approval.
 
 To select a model, copy the full definition and add the CLI's supported model arguments. Soudan deliberately does not hard-code model names. Refer to [Codex noninteractive mode](https://developers.openai.com/codex/noninteractive/), [Claude Code programmatic mode](https://code.claude.com/docs/en/headless), and [Cursor CLI](https://cursor.com/docs/cli/overview) when adapting to another client version.
 

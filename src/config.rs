@@ -75,6 +75,22 @@ impl Default for Config {
                 Output::Text,
             ),
             (
+                "copilot",
+                "copilot",
+                vec![
+                    "--silent",
+                    "--stream=off",
+                    "--available-tools=",
+                    "--disable-builtin-mcps",
+                    "--no-ask-user",
+                    "--no-auto-update",
+                    "--no-custom-instructions",
+                    "--prompt",
+                ],
+                Input::Argument,
+                Output::Text,
+            ),
+            (
                 "cursor",
                 "cursor-agent",
                 vec!["-p", "--mode", "ask", "--output-format", "json", "--trust"],

@@ -195,3 +195,35 @@ fn pagination_catches_up_without_skipping_and_keeps_latest_context() {
     assert_eq!(context.as_array().unwrap().len(), 20);
     assert_eq!(context[0]["text"], "message-185");
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn copilot_consultation_passes_literal_prompt_and_disables_tools() {
+    let dir = tempfile::tempdir().unwrap();
+    let script = dir.path().join("copilot-fixture.sh");
+    std::fs::write(
+        &script,
+        r#"#!/bin/sh
+[ "$SOUDAN_CHILD" = 1 ] || exit 2
+[ "$1" = --silent ] || exit 3
+[ "$2" = --stream=off ] || exit 4
+[ "$3" = --available-tools= ] || exit 5
+[ "$4" = --disable-builtin-mcps ] || exit 6
+[ "$5" = --no-ask-user ] || exit 7
+[ "$6" = --no-auto-update ] || exit 8
+[ "$7" = --no-custom-instructions ] || exit 9
+[ "$8" = --prompt ] || exit 10
+[ "$#" = 9 ] || exit 11
+printf '%s' "$9"
+"#,
+    )
+    .unwrap();
+    let mut plugin = Config::default().agents["copilot"].clone();
+    plugin.command = "sh".into();
+    plugin.args.insert(0, script.to_str().unwrap().into());
+    let prompt = "日本語 ' $(false)\nsecond line";
+    assert_eq!(
+        run_plugin(&plugin, prompt, dir.path(), 2).await.unwrap(),
+        prompt
+    );
+}
