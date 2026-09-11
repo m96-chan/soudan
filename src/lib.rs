@@ -11,3 +11,4 @@ pub mod mcp;
 pub mod claude;
 pub mod codex;
 pub mod live;
+pub mod receipt;

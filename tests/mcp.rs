@@ -73,7 +73,7 @@ async fn mcp_clients_share_rooms_and_jobs_survive_disconnect() {
     let tools = a
         .rpc(json!({"jsonrpc":"2.0","id":3,"method":"tools/list"}))
         .await;
-    assert_eq!(tools["result"]["tools"].as_array().unwrap().len(), 8);
+    assert_eq!(tools["result"]["tools"].as_array().unwrap().len(), 9);
     let posted = payload(
         a.call(
             "soudan_post",
@@ -190,11 +190,21 @@ async fn live_tools_are_discoverable_and_report_offline_bridge_as_tool_error() {
         .collect();
     for name in [
         "soudan_live_targets",
+        "soudan_live_delivery",
         "soudan_live_read",
         "soudan_live_send",
     ] {
         assert!(names.contains(&name));
     }
+    let db = rusqlite::Connection::open(dir.path().join(".soudan/state.db")).unwrap();
+    db.execute_batch("CREATE TABLE live_deliveries(request_id TEXT PRIMARY KEY,target TEXT NOT NULL,text TEXT NOT NULL,status TEXT NOT NULL,before_screen TEXT NOT NULL,error TEXT); INSERT INTO live_deliveries VALUES('legacy','codex:42:123','hello','queued','',NULL);").unwrap();
+    let receipt = payload(
+        client
+            .call("soudan_live_delivery", json!({"request_id":"legacy"}))
+            .await,
+    );
+    assert_eq!(receipt["status"], "queued");
+    assert_eq!(receipt["receipt"]["status"], "unknown");
     let targets = payload(client.call("soudan_live_targets", json!({})).await);
     assert!(targets.as_array().unwrap().is_empty());
     let response = client

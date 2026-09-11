@@ -154,7 +154,7 @@ fn record(workspace: &Path, request_id: &str, target: &str, text: &str, status: 
     let db = rusqlite::Connection::open(workspace.join(".soudan/state.db")).unwrap();
     db.execute_batch("CREATE TABLE IF NOT EXISTS live_deliveries(request_id TEXT PRIMARY KEY,target TEXT NOT NULL,text TEXT NOT NULL,status TEXT NOT NULL,before_screen TEXT NOT NULL,error TEXT);").unwrap();
     db.execute(
-        "INSERT INTO live_deliveries VALUES(?1,?2,?3,?4,'',NULL)",
+        "INSERT INTO live_deliveries(request_id,target,text,status,before_screen,error) VALUES(?1,?2,?3,?4,'',NULL)",
         rusqlite::params![request_id, target, text, status],
     )
     .unwrap();
@@ -174,6 +174,7 @@ async fn a_settled_delivery_is_reported_even_though_its_chat_has_ended() {
         .unwrap();
     assert_eq!(value["status"], "submitted");
     assert_eq!(value["replayed"], true);
+    assert_eq!(value["receipt"]["status"], "unknown");
 
     // The same id carrying a different message stays a mistake, not a replay.
     assert!(

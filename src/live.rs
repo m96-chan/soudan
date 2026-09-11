@@ -11,6 +11,24 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 /// Delivery records outlive any one transport, so both of them use this table.
 const DELIVERIES: &str = "CREATE TABLE IF NOT EXISTS live_deliveries(request_id TEXT PRIMARY KEY,target TEXT NOT NULL,text TEXT NOT NULL,status TEXT NOT NULL,before_screen TEXT NOT NULL,error TEXT);";
 
+/// Migrate existing databases atomically, including concurrent bridge/server opens.
+fn delivery_schema(db: &rusqlite::Connection) -> Result<()> {
+    let tx = rusqlite::Transaction::new_unchecked(db, rusqlite::TransactionBehavior::Immediate)?;
+    tx.execute_batch(DELIVERIES)?;
+    let exists = {
+        let mut query = tx.prepare("PRAGMA table_info(live_deliveries)")?;
+        let names = query
+            .query_map([], |r| r.get::<_, String>(1))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        names.iter().any(|n| n == "receipt_basis")
+    };
+    if !exists {
+        tx.execute_batch("ALTER TABLE live_deliveries ADD COLUMN receipt_basis TEXT")?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct LiveTarget {
@@ -213,6 +231,17 @@ pub async fn read(workspace: &Path, target: &str) -> Result<Value> {
     .await
 }
 pub async fn send(workspace: &Path, target: &str, text: &str, request_id: &str) -> Result<Value> {
+    let mut result = send_inner(workspace, target, text, request_id).await?;
+    let receipt = delivery(workspace, request_id)
+        .map(|v| v["receipt"].clone())
+        .unwrap_or_else(|e| crate::receipt::unknown(&format!("{e:#}")));
+    if receipt["status"] == "blocked" {
+        result["next"] = receipt["reason"].clone();
+    }
+    result["receipt"] = receipt;
+    Ok(result)
+}
+async fn send_inner(workspace: &Path, target: &str, text: &str, request_id: &str) -> Result<Value> {
     ensure!(
         std::env::var_os("SOUDAN_CHILD").is_none(),
         "Consultation workers cannot inject messages into live chats"
@@ -295,7 +324,7 @@ pub fn settled(
 ) -> Result<Option<String>> {
     let db = rusqlite::Connection::open(workspace.join(".soudan/state.db"))?;
     db.busy_timeout(Duration::from_secs(5))?;
-    db.execute_batch(DELIVERIES)?;
+    delivery_schema(&db)?;
     recorded(&db, request_id, target, text)
 }
 
@@ -314,6 +343,7 @@ fn claim(
     target: &str,
     text: &str,
     before: &str,
+    basis: Option<&str>,
 ) -> Result<Claim> {
     use rusqlite::{TransactionBehavior, params};
     let tx = rusqlite::Transaction::new_unchecked(db, TransactionBehavior::Immediate)?;
@@ -324,8 +354,8 @@ fn claim(
     // The row may already exist as a proven non-delivery, which recorded() cleared
     // for reuse; either way the claim resets it to this attempt.
     tx.execute(
-        "INSERT INTO live_deliveries(request_id,target,text,status,before_screen) VALUES(?1,?2,?3,'uncertain',?4) ON CONFLICT(request_id) DO UPDATE SET status='uncertain',error=NULL,before_screen=excluded.before_screen",
-        params![request_id, target, text, before],
+        "INSERT INTO live_deliveries(request_id,target,text,status,before_screen,receipt_basis) VALUES(?1,?2,?3,'uncertain',?4,?5) ON CONFLICT(request_id) DO UPDATE SET status='uncertain',error=NULL,before_screen=excluded.before_screen,receipt_basis=excluded.receipt_basis",
+        params![request_id, target, text, before, basis],
     )?;
     tx.commit()?;
     Ok(Claim::Reserved)
@@ -342,11 +372,16 @@ async fn queue_to_codex(
     use rusqlite::params;
     let db = rusqlite::Connection::open(workspace.join(".soudan/state.db"))?;
     db.busy_timeout(Duration::from_secs(5))?;
-    db.execute_batch(DELIVERIES)?;
+    delivery_schema(&db)?;
+    let basis = crate::receipt::Basis::capture(&session.rollout)
+        .ok()
+        .and_then(|b| serde_json::to_string(&b).ok());
     let before = crate::codex::state(&session.rollout)?.to_string();
     // Commit the intent before handing the message over, so an interrupted sender
     // leaves an uncertain record instead of silently resending later.
-    if let Claim::Recorded(status) = claim(&db, request_id, &target.id, text, &before)? {
+    if let Claim::Recorded(status) =
+        claim(&db, request_id, &target.id, text, &before, basis.as_deref())?
+    {
         return Ok(
             json!({"request_id":request_id,"target":target.id,"status":status,"replayed":true}),
         );
@@ -387,9 +422,14 @@ async fn send_to_claude(
     use rusqlite::params;
     let db = rusqlite::Connection::open(workspace.join(".soudan/state.db"))?;
     db.busy_timeout(Duration::from_secs(5))?;
-    db.execute_batch(DELIVERIES)?;
+    delivery_schema(&db)?;
+    let basis = crate::receipt::Basis::capture(&session.transcript)
+        .ok()
+        .and_then(|b| serde_json::to_string(&b).ok());
     let before = json!({"session":session.id,"status":session.status}).to_string();
-    if let Claim::Recorded(status) = claim(&db, request_id, &target.id, text, &before)? {
+    if let Claim::Recorded(status) =
+        claim(&db, request_id, &target.id, text, &before, basis.as_deref())?
+    {
         return Ok(
             json!({"request_id":request_id,"target":target.id,"status":status,"replayed":true}),
         );
@@ -481,7 +521,7 @@ pub async fn bridge(workspace: &Path) -> Result<()> {
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
     let db = rusqlite::Connection::open(workspace.join(".soudan/state.db"))?;
     db.busy_timeout(Duration::from_secs(5))?;
-    db.execute_batch(DELIVERIES)?;
+    delivery_schema(&db)?;
     loop {
         let (mut stream, _) = listener.accept().await?;
         let mut stop = false;
@@ -546,7 +586,8 @@ async fn handle(workspace: &Path, db: &rusqlite::Connection, req: Request) -> Re
             validate_terminal(workspace, &t)?;
             let before = kitty(&["get-text", "--match", &match_id], None).await?;
             ensure_ready(&t.agent, &before)?;
-            if let Claim::Recorded(status) = claim(db, &request_id, &target, &text, &before)? {
+            if let Claim::Recorded(status) = claim(db, &request_id, &target, &text, &before, None)?
+            {
                 return Ok(
                     json!({"request_id":request_id,"target":target,"status":status,"replayed":true}),
                 );
@@ -732,11 +773,24 @@ pub async fn setup(_: &Path, _: u32) -> Result<Value> {
 }
 
 pub fn delivery(workspace: &Path, id: &str) -> Result<Value> {
-    let db = rusqlite::Connection::open_with_flags(
-        workspace.join(".soudan/state.db"),
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-    )?;
-    db.query_row("SELECT target,text,status,error FROM live_deliveries WHERE request_id=?1",[id],|r|Ok(json!({"request_id":id,"target":r.get::<_,String>(0)?,"text":r.get::<_,String>(1)?,"status":r.get::<_,String>(2)?,"error":r.get::<_,Option<String>>(3)?}))).context("Live delivery not found")
+    delivery_in(workspace, id, Path::new("/proc"))
+}
+
+/// Inspect a saved delivery using an injectable process directory.
+pub fn delivery_in(workspace: &Path, id: &str, proc: &Path) -> Result<Value> {
+    validate_request_id(id)?;
+    let db = rusqlite::Connection::open(workspace.join(".soudan/state.db"))?;
+    db.busy_timeout(Duration::from_secs(5))?;
+    delivery_schema(&db)?;
+    let (mut row, basis) = db.query_row("SELECT target,text,status,error,receipt_basis FROM live_deliveries WHERE request_id=?1", [id], |r| Ok((json!({"request_id":id,"target":r.get::<_,String>(0)?,"text":r.get::<_,String>(1)?,"status":r.get::<_,String>(2)?,"error":r.get::<_,Option<String>>(3)?}), r.get::<_,Option<String>>(4)?))).context("Live delivery not found")?;
+    let basis = basis.and_then(|s| serde_json::from_str::<crate::receipt::Basis>(&s).ok());
+    row["receipt"] = crate::receipt::observe(
+        basis.as_ref(),
+        proc,
+        row["target"].as_str().unwrap_or(""),
+        id,
+    );
+    Ok(row)
 }
 #[cfg(unix)]
 pub async fn disconnect(workspace: &Path) -> Result<Value> {
@@ -852,4 +906,40 @@ pub fn validate_request_id(id: &str) -> Result<()> {
         "Live request_id must contain 1–128 ASCII letters, digits, hyphens, underscores, periods, or colons"
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod receipt_claim_tests {
+    use super::*;
+    #[test]
+    fn claim_commits_evidence_and_only_replaces_it_for_proven_non_delivery() {
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        delivery_schema(&db).unwrap();
+        assert!(matches!(
+            claim(&db, "id", "codex:42:123", "hello", "aborted", Some("first")).unwrap(),
+            Claim::Reserved
+        ));
+        assert!(db.is_autocommit());
+        assert!(matches!(
+            claim(&db, "id", "codex:42:123", "hello", "idle", Some("second")).unwrap(),
+            Claim::Recorded(_)
+        ));
+        assert!(db.is_autocommit());
+        let basis = || {
+            db.query_row("SELECT receipt_basis FROM live_deliveries", [], |r| {
+                r.get::<_, String>(0)
+            })
+            .unwrap()
+        };
+        assert_eq!(basis(), "first");
+        db.execute("UPDATE live_deliveries SET status='not_delivered'", [])
+            .unwrap();
+        assert!(matches!(
+            claim(&db, "id", "codex:42:123", "hello", "idle", Some("second")).unwrap(),
+            Claim::Reserved
+        ));
+        assert_eq!(basis(), "second");
+        assert!(claim(&db, "id", "codex:42:123", "different", "", None).is_err());
+        assert!(db.is_autocommit());
+    }
 }

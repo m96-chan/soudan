@@ -86,7 +86,7 @@ soudan live setup --via-pid <PID_FROM_LIST>
 # Press Ctrl+Shift+F12 once in the existing Kitty window.
 ```
 
-MCP clients can use `soudan_live_targets`, `soudan_live_read`, and `soudan_live_send` for the same workflow. See [live chat setup and verification](docs/live-chats.md). The destination is always the existing session; neither `queued` nor `submitted` is an answer, so read the target to see its reply.
+MCP clients can use `soudan_live_targets`, `soudan_live_read`, `soudan_live_send`, and `soudan_live_delivery` for the same workflow. See [live chat setup and verification](docs/live-chats.md). The destination is always the existing session; neither `queued` nor `submitted` is an answer, so read the target to see its reply.
 
 For clients outside this live transport, shared rooms remain available: ask each session to use `soudan_post` and `soudan_history` in the same workspace. `soudan_consult` continues to start separate headless sessions with room context.
 
@@ -124,3 +124,5 @@ cargo clippy --locked --all-targets -- -D warnings
 ```
 
 Tests use deterministic local executables and temporary workspaces; they do not call paid models. Live checks are separate and opt-in. Licensed under [MIT](LICENSE).
+
+Inspect `soudan live delivery <request_id>` (MCP: `soudan_live_delivery`) for a derived `receipt.status`: `taken`, `waiting`, `blocked`, `lost`, or `unknown`. Saved sender status is unchanged. See [receipt evidence and limitations](docs/live-chats.md#receipt-evidence).

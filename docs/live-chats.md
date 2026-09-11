@@ -112,19 +112,20 @@ If a send is interrupted after its intent is recorded, its state stays `uncertai
 
 ## MCP workflow
 
-Reload the Soudan MCP connection after upgrading. Three additional tools are available:
+Reload the Soudan MCP connection after upgrading. Four live tools are available:
 
 | Tool | Purpose |
 | --- | --- |
 | `soudan_live_targets` | Discover existing agent terminals in this workspace. |
 | `soudan_live_read` | Read one target's state: a Codex or Claude session's state and recent reply, or Cursor's visible terminal screen. |
+| `soudan_live_delivery` | Inspect a request ID and derive receipt evidence without resending. |
 | `soudan_live_send` | Deliver a message into one target's existing chat over that agent's transport. |
 
 Example request to a coordinating agent:
 
 > Use Soudan's live tools to send Claude Code a design question in its currently open chat. Read its reply, then send that reply to the currently open Cursor chat for critique. Show me which terminal received each message.
 
-Client tool permissions are separate from Kitty attachment. Following the format in [setup.md](setup.md#noninteractive-tool-permissions), add the three live tool names to the clients you want to use as coordinators. Approving `soudan_live_send` allows direct input to the selected terminal; headless consultation workers are explicitly prohibited from using this send path.
+Client tool permissions are separate from Kitty attachment. Following the format in [setup.md](setup.md#noninteractive-tool-permissions), add the four live tool names to the clients you want to use as coordinators. Approving `soudan_live_send` allows direct input to the selected terminal; headless consultation workers are explicitly prohibited from using this send path.
 
 ## Delivery checks and limits
 
@@ -168,3 +169,48 @@ python3 scripts/live_terminal_smoke.py
 It tests real terminal input, a visible fixture reply, retry deduplication, draft protection, and disconnect. This is distinct from verifying the user's already-running LLM sessions; that requires the one-time bridge attachment and an actual send/read exchange.
 
 See [the verification report](live-terminal-verification.md) for completed checks and current attachment status.
+
+## Receipt evidence
+
+`live send` includes a machine-readable `receipt` object. Inspect it again with
+`soudan live delivery <request_id>` or MCP `soudan_live_delivery` with
+`{"request_id":"<request_id>"}`. These observations never overwrite the saved
+sender `status` and never resend, cancel, or manipulate another agent's queue.
+
+| `receipt.status` | Observation |
+| --- | --- |
+| `taken` | The recipient log contains `[Soudan <request_id>]` after the send boundary. |
+| `waiting` | No marker yet; the original process is alive (Codex must be idle/running). Claude policy can still hold or refuse input. |
+| `blocked` | No marker; the original Codex process is alive but its turn is aborted. Human interaction is required before the queue is collected. |
+| `lost` | The covered log range has no marker and the original PID/start time is gone or replaced. |
+| `unknown` | Coverage, process identity, or Codex state cannot be established. Cursor always returns this because it has no persistent receipt log. |
+
+Aborted Codex sessions still accept messages. Their send result explains that
+waiting alone will not deliver the message; someone must interact with the terminal.
+`waiting` is also an observation, not a promise of eventual delivery.
+
+Before delivery, Soudan commits the log path, byte offset, device/inode and up to
+128 preceding bytes alongside its request reservation. Receipt checks stream the
+entire appended range through a bounded buffer, including markers more than
+256 KiB behind the end. Normal rotation, truncation, a changed boundary, missing
+logs or unreadable evidence yield `unknown`. This assumes append-only logs:
+arbitrary in-place rewrites that restore the boundary cannot be detected. Each
+result is a snapshot and subsequent writes can change it. `lost` concerns the
+original recipient process; it is not a guarantee that a resumed thread could
+never process an old queue item. Do not automatically resend based on it.
+
+Existing databases are migrated transactionally with a nullable `receipt_basis`
+column. Legacy rows have no send boundary and return `unknown`, including the
+historical failed queue and Claude envelope probes. Missing transcripts at send
+time also produce `unknown`; they do not prevent sending. Observations are not
+stored. No Codex private queue database is read and no terminal scraping is used
+for receipts.
+
+A marker is evidence of transcript inclusion, **not proof that the agent read,
+understood, or answered the message**. Another message quoting the exact marker
+can produce a false positive. Use `live read` to verify the actual reply.
+
+After upgrading, reload the MCP connection and permit `soudan_live_delivery` in
+clients with explicit tool allowlists (Claude: `mcp__soudan__soudan_live_delivery`;
+Cursor: `Mcp(soudan:soudan_live_delivery)`; Codex: the corresponding tool entry
+under its Soudan MCP permissions). Room posts still do not wake another session.

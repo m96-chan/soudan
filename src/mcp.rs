@@ -43,6 +43,11 @@ struct History {
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct LiveDelivery {
+    request_id: String,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct LiveRead {
     target: String,
 }
@@ -58,6 +63,7 @@ impl Mcp {
         let string = json!({"type":"string","minLength":1});
         [
             ("soudan_live_targets", "Find existing interactive agent terminals in this workspace. These are open chats, not new headless sessions. Codex uses its session queue; Claude Code uses its native inbox socket. Only Cursor needs a Kitty bridge.", json!({}), vec![]),
+            ("soudan_live_delivery", "Inspect a saved live delivery and derive receipt.status: taken, waiting, blocked, lost, or unknown. Sender status remains unchanged. Receipt is not proof of a reply. Never automatically resend based on this observation.", json!({"request_id":string}), vec!["request_id"]),
             ("soudan_live_read", "Read an existing chat's current state. Codex and Claude Code return session state and recent reply text. Cursor returns a terminal snapshot, which is a screen holding prompts and status text, not a structured assistant response.", json!({"target":string}), vec!["target"]),
             ("soudan_live_send", "Submit a message directly into an existing interactive chat. Only use when the user has authorized messaging that session. Requires a unique request_id; retries never resubmit uncertain deliveries. Codex and Claude Code accept native submissions mid-turn; Claude inbound policy may hold or refuse them. Cursor is refused while busy or holding a draft. Read the target after sending to see the reply. Do not create automatic reply loops.", json!({"target":string,"text":string,"request_id":string}), vec!["target","text","request_id"]),
             ("soudan_agents", "List agent plugins and local executable availability. Availability does not verify authentication.", json!({}), vec![]),
@@ -77,6 +83,10 @@ impl Mcp {
                 Ok(serde_json::to_value(crate::live::discover(
                     &self.app.workspace,
                 )?)?)
+            }
+            "soudan_live_delivery" => {
+                let p: LiveDelivery = serde_json::from_value(args)?;
+                crate::live::delivery(&self.app.workspace, &p.request_id)
             }
             "soudan_live_read" => {
                 let p: LiveRead = serde_json::from_value(args)?;
