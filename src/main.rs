@@ -89,18 +89,7 @@ enum LiveCommands {
     Delivery {
         request_id: String,
     },
-    /// Stop the bridge and remove its shortcut; leave chats open.
-    Disconnect,
     List,
-    Setup {
-        #[arg(long)]
-        via_pid: u32,
-        /// Kitty key to map, e.g. ctrl+shift+backslash. One kitty.conf serves
-        /// every workspace, so a second project needs a free key. Omitted, this
-        /// keeps the key this workspace already installed.
-        #[arg(long)]
-        shortcut: Option<String>,
-    },
     Read {
         target: String,
     },
@@ -110,8 +99,6 @@ enum LiveCommands {
         request_id: String,
         text: String,
     },
-    #[command(hide = true)]
-    Bridge,
 }
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -188,21 +175,13 @@ async fn main() -> Result<()> {
             LiveCommands::Delivery { request_id } => {
                 soudan::live::delivery(&app.workspace, &request_id)?
             }
-            LiveCommands::Disconnect => soudan::live::disconnect(&app.workspace).await?,
             LiveCommands::List => serde_json::to_value(soudan::live::discover(&app.workspace)?)?,
-            LiveCommands::Setup { via_pid, shortcut } => {
-                soudan::live::setup(&app.workspace, via_pid, shortcut.as_deref()).await?
-            }
             LiveCommands::Read { target } => soudan::live::read(&app.workspace, &target).await?,
             LiveCommands::Send {
                 target,
                 request_id,
                 text,
             } => soudan::live::send(&app.workspace, &target, &text, &request_id).await?,
-            LiveCommands::Bridge => {
-                soudan::live::bridge(&app.workspace).await?;
-                return Ok(());
-            }
         },
         Commands::Doctor => app.agents(),
         Commands::Consult {

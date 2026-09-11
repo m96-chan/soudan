@@ -158,4 +158,4 @@ approval_mode = "approve"
 
 These settings apply only to the named tools. Allowing `soudan_consult` permits starting configured agent processes and consuming their normal provider usage. The installer preserves existing Soudan tool options on reinstall, but does not automatically add these permissions. See [Codex's configuration reference](https://developers.openai.com/codex/config-reference/).
 
-For direct input into an already-open Kitty terminal chat, follow [the live chat setup](live-chats.md). Room posting alone does not trigger live delivery.
+For direct delivery into an already-open Claude Code or Codex chat, follow [the live chat guide](live-chats.md). Room posting alone does not trigger live delivery.

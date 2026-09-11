@@ -207,6 +207,7 @@ async fn live_tools_are_discoverable_and_report_offline_bridge_as_tool_error() {
     assert_eq!(receipt["receipt"]["status"], "unknown");
     let targets = payload(client.call("soudan_live_targets", json!({})).await);
     assert!(targets.as_array().unwrap().is_empty());
+    // A transport Soudan does not serve is refused by name rather than attempted.
     let response = client
         .call(
             "soudan_live_send",
@@ -214,4 +215,6 @@ async fn live_tools_are_discoverable_and_report_offline_bridge_as_tool_error() {
         )
         .await;
     assert_eq!(response["result"]["isError"], true);
+    let text = response["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(text.contains("kitty"), "{text}");
 }

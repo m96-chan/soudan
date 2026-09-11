@@ -62,3 +62,11 @@ observed transcript text into a durable recipient acknowledgement.
 
 Reload Soudan's MCP connection in sending clients that still run the old server
 process. The receiving Claude session itself does not require an MCP reload.
+
+## Note added after the terminal transport was removed
+
+The observations above were recorded while the Kitty bridge still existed, and
+they name it because the point at the time was that native delivery worked
+without it. That transport and its fixture have since been removed along with
+Cursor support, so the commands they describe no longer exist. The native
+results themselves are unaffected: they never used the bridge.

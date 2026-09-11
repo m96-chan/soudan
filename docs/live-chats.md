@@ -8,15 +8,16 @@ The transport depends on the agent, because a terminal is a poor substitute for 
 | --- | --- | --- |
 | Codex CLI | Codex's own session queue | none |
 | Claude Code | Native peer inbox socket (Linux) | messaging enabled in the target |
-| Cursor Agent CLI | Linux + Kitty terminal | one-time bridge attachment |
 
-A target's id names its transport, because each agent has exactly one. Codex ids begin `codex:`, Claude Code ids begin `claude:`, and Cursor ids begin `kitty:`. There is no fallback between them: keystroke automation cannot reliably tell an empty composer from one holding a draft, so a Codex session whose thread cannot be read is reported as an error rather than typed into.
+A target's id names its transport, because each agent has exactly one: Codex ids begin `codex:`, Claude Code ids begin `claude:`. There is no fallback between them. A session whose own API cannot be reached is reported as an error rather than reached some other way, because the alternative was typing into its terminal, and keystrokes cannot tell an empty composer from one holding somebody's unsent draft.
 
-Claude Code uses its cross-session inbox as described below. Cursor Agent CLI currently uses terminal delivery. Native Cursor editor panels, browser chats, and other terminal emulators are not supported. The existing headless plugin integrations remain available on their previously supported platforms.
+**Cursor is not supported here.** It was reached by typing into its terminal through a Kitty bridge, which needed a keypress to arm, could not protect a draft, and existed for that one agent. That transport has been removed. Cursor returns when it exposes a session API of its own; its headless plugin integration is unaffected and still works with `soudan consult`.
+
+Native editor panels, browser chats, and terminal emulators in general are not targets: delivery goes to the agent, not to whatever is drawing it.
 
 ## Codex sessions need no setup
 
-`soudan live list` finds the session, and Soudan resolves its thread identity from the files the process holds open: the thread write lock and that thread's rollout, matched by exact name. That works whether or not the session was started with `codex resume`, whose command line is the only other place the thread id appears, and it does not require the session to be running under Kitty. A process holding more than one thread lock is refused rather than guessed at.
+`soudan live list` finds the session, and Soudan resolves its thread identity from the files the process holds open: the thread write lock and that thread's rollout, matched by exact name. That works whether or not the session was started with `codex resume`, whose command line is the only other place the thread id appears,. A process holding more than one thread lock is refused rather than guessed at.
 
 ```sh
 soudan live read codex:900463:210017161
@@ -41,9 +42,7 @@ soudan live read codex:900463:210017161
 
 Codex accepts a message **even while it is working**, and answers it in order. There is no draft to protect and no idle composer to wait for, so none of the terminal restrictions below apply. `codex` must be on `PATH`; when it is missing the delivery is recorded as `not_delivered` and the same request ID may be retried, because a command that never ran cannot have delivered anything.
 
-The Kitty sections below apply only to Cursor.
-
-## Claude Code sessions: native inbox, no Kitty
+## Claude Code sessions: native inbox
 
 Use the current Soudan binary and reload the Soudan MCP server in the sending client after upgrading. The receiving Claude session does not need a new MCP server, channels flag, bridge, or restart when its native inbox is already enabled.
 
@@ -57,11 +56,11 @@ soudan live delivery claude-review-1
 soudan live read claude:12345:67890
 ```
 
-The same route is available through `soudan_live_targets`, `soudan_live_send`, and `soudan_live_read`. Discovery is currently Linux-only and scoped to interactive processes in the exact workspace. Claude does not need `KITTY_WINDOW_ID`.
+The same route is available through `soudan_live_targets`, `soudan_live_send`, and `soudan_live_read`. Discovery is currently Linux-only and scoped to interactive processes in the exact workspace. 
 
 Soudan reads the selected process's `CLAUDE_CONFIG_DIR` (or `HOME/.claude`), then its `sessions/<pid>.json` record. It checks workspace, PID, process start time, canonical session UUID, and peer protocol 1. Before writing, it validates the socket type, directory ownership, connected peer UID/PID, and process lifetime. It does not read recipient auth keys or claim a permission class. A missing or unsupported inbox is an error, never a terminal fallback.
 
-**Compatibility:** the inbox is a documented Claude feature, but its JSON wire format and registry layout are not a versioned public SDK contract. This adapter is experimental, targets peer protocol 1, and was inspected against Claude Code 2.1.268. Unknown protocol versions are refused. Upgrades should rerun the socket tests and a bounded live test; compatibility with all future versions is not promised. A protocol change can make Claude delivery unavailable until this adapter is updated; Kitty cannot be selected as a workaround in this implementation.
+**Compatibility:** the inbox is a documented Claude feature, but its JSON wire format and registry layout are not a versioned public SDK contract. This adapter is experimental, targets peer protocol 1, and was inspected against Claude Code 2.1.268. Unknown protocol versions are refused. Upgrades should rerun the socket tests and a bounded live test; compatibility with all future versions is not promised. A protocol change can make Claude delivery unavailable until this adapter is updated; there is no fallback transport to select instead.
 
 `submitted` means the message was written to the inbox. Claude may hold or refuse it according to `crossSessionInbound` and its permission mode. If Claude displays an approval dialog, approve it in that session if desired. Soudan never changes these controls. `not_delivered` is retryable with identical arguments; write failures are `uncertain` and are not automatically retried. Delivery history is committed before writing.
 
@@ -69,48 +68,21 @@ Soudan reads the selected process's `CLAUDE_CONFIG_DIR` (or `HOME/.claude`), the
 
 See the [official cross-session messaging documentation](https://code.claude.com/docs/en/cross-session-messaging#the-sessions-inbox-socket) for availability, inbound controls, and socket configuration.
 
-## Connect without restarting your chats
-
-This applies to Cursor targets only. Install the current binary, then discover the running chats in your project:
-
-```sh
-cargo install --path /path/to/soudan --locked --force
-cd /path/to/your/project
-soudan live list
-```
-
-Each target contains its agent name, PID, Kitty window ID, and a stable process identity. Choose a PID from this list:
-
-```sh
-soudan live setup --via-pid 12345
-```
-
-The command adds a project-specific **Ctrl+Shift+F12** shortcut to Kitty's configuration and reloads its key mappings. Press that shortcut once in the existing Kitty instance. It launches a background bridge with permission to read screens, paste text, and send the Enter key. Your open chats remain running.
-
-Pass `--shortcut` to map a different key, for example `--shortcut ctrl+shift+backslash` on a keyboard without an F12. One `kitty.conf` serves every project, so the key is a machine-wide resource: a second workspace that asks for a key already mapped is refused rather than adding a mapping that would never fire. Re-running setup without `--shortcut` keeps the key this workspace already installed, so a hand-picked one is not reset to the default.
-
-Only Cursor targets need this bridge. Claude Code and Codex are delivered to natively, so a project that uses neither Cursor nor the terminal transport needs no shortcut at all.
-
-This key press is needed when Kitty was started without remote control. Its global remote-control mode cannot be enabled by reloading configuration. Soudan does not change the global mode or restart Kitty. The shortcut grants a dedicated connection only to the bridge. If the key is already mapped, setup refuses to overwrite it; configure a different shortcut manually.
-
-Setup expects Kitty's standard configuration path (`$XDG_CONFIG_HOME/kitty/kitty.conf`, or `~/.config/kitty/kitty.conf`). For a Kitty instance launched with a custom config path, place the generated mapping in that config and reload it yourself. Only one Kitty instance is connected per workspace in this version.
-
 ## Send and verify
 
-Use a target ID returned by `live list`, not a bare PID or window title:
+Use a target ID returned by `live list`, not a bare PID:
 
 ```sh
-soudan live read kitty:12345:987654
-soudan live send kitty:12345:987654 \
+soudan live read claude:12345:987654
+soudan live send claude:12345:987654 \
   --request-id design-question-1 \
   'From Codex: please review this proposal and reply here in this chat.'
-soudan live read kitty:12345:987654
 soudan live delivery design-question-1
 ```
 
-The target chat receives a visibly labelled message such as `[Soudan design-question-1] From Codex: ...`. Its own running agent responds in that same terminal. Read the screen again after the agent finishes. To continue a conversation across two open chats, read the first reply and explicitly relay the relevant text to the second target.
+The target chat receives a visibly labelled message such as `[Soudan design-question-1] From Codex: ...`. Its own running agent responds in its own chat. To continue a conversation across two open chats, read the first reply and explicitly relay the relevant text to the second target.
 
-`submitted` means Kitty accepted the paste and Enter operations. It is **not** proof of a model response. `live read` returns a `terminal_snapshot`; terminal output includes prompts, user messages, status text, and assistant responses. Verify the visible exchange rather than treating the entire snapshot as an assistant answer.
+`queued` and `submitted` describe what the sender did, not what the recipient got. Neither is proof of a model response. The `receipt` field reports what can actually be observed in the recipient's own log; see [Receipt evidence](#receipt-evidence).
 
 If a send is interrupted after its intent is recorded, its state stays `uncertain`. Repeating its request ID never resubmits it, even if the original send may have failed; the recorded outcome comes back with `"replayed": true`. That answer is given before the target is looked at, so an ID whose fate is already decided still reports it after the chat has ended or while it is mid-turn. Inspect the target before deciding whether to create a new request. Reusing an ID with different text or a different target is rejected. Live request IDs contain 1–128 ASCII letters, digits, hyphens, underscores, periods, or colons.
 
@@ -121,39 +93,26 @@ Reload the Soudan MCP connection after upgrading. Four live tools are available:
 | Tool | Purpose |
 | --- | --- |
 | `soudan_live_targets` | Discover existing agent terminals in this workspace. |
-| `soudan_live_read` | Read one target's state: a Codex or Claude session's state and recent reply, or Cursor's visible terminal screen. |
+| `soudan_live_read` | Read one target's state: a Codex or Claude session's state and its most recent reply. |
 | `soudan_live_delivery` | Inspect a request ID and derive receipt evidence without resending. |
 | `soudan_live_send` | Deliver a message into one target's existing chat over that agent's transport. |
 
 Example request to a coordinating agent:
 
-> Use Soudan's live tools to send Claude Code a design question in its currently open chat. Read its reply, then send that reply to the currently open Cursor chat for critique. Show me which terminal received each message.
+> Use Soudan's live tools to send Claude Code a design question in its currently open chat. Read its reply, then send that reply to the open Codex session for critique. Show me which session received each message.
 
-Client tool permissions are separate from Kitty attachment. Following the format in [setup.md](setup.md#noninteractive-tool-permissions), add the four live tool names to the clients you want to use as coordinators. Approving `soudan_live_send` allows direct input to the selected terminal; headless consultation workers are explicitly prohibited from using this send path.
+Following the format in [setup.md](setup.md#noninteractive-tool-permissions), add the four live tool names to the clients you want to use as coordinators. Approving `soudan_live_send` allows direct input to the selected terminal; headless consultation workers are explicitly prohibited from using this send path.
 
 ## Delivery checks and limits
 
-These apply to the Kitty transport. Codex deliveries are subject only to the message limits and the request ID rules above.
+Before a message is handed over, Soudan checks that:
 
-Before input is sent, Soudan checks that:
-
-- The target process is still the discovered agent, with the same start time and Kitty window ID.
-- It is still in the same canonical workspace and the same Kitty instance as the bridge.
-- It is the terminal's foreground process group.
-- The visible input prompt is recognizable and empty, with no detected draft or busy indicator.
+- The target process is still the discovered agent, in the same workspace, with the same start time. A replaced process is refused rather than delivered to by name.
+- For Claude Code, the connected socket peer's PID and UID match the target, and the inbox is a socket owned by this user in a directory no one else can write.
 - The message is nonblank, at most 8 KiB, and contains no terminal control characters except newline and tab.
+- The request ID is unused, or its recorded outcome proves nothing was delivered.
 
-The input check fails closed for unsupported prompt layouts. Do not work around a refusal by clearing another person's draft. These screen-based checks cannot make keyboard input atomic with a person typing: leave the destination input untouched during a send. Sending to busy sessions is not queued automatically.
-
-The bridge socket lives at `.soudan/kitty.sock` with mode 0600 inside the private state directory. Requests are serialized. Delivery records, including the pre-send screen, are kept in `.soudan/state.db` and should stay out of version control.
-
-## Disconnect
-
-```sh
-soudan live disconnect
-```
-
-This stops the bridge and removes the exact shortcut block installed by Soudan, preserving the rest of Kitty's configuration. It leaves chats and delivery history intact. If you edited that block manually, remove it manually when the command reports a conflict. After rebuilding or reinstalling Soudan, disconnect, rerun setup, and press the shortcut to launch the updated bridge.
+Delivery records are kept in `.soudan/state.db` and should stay out of version control.
 
 ## Verification
 
@@ -163,16 +122,7 @@ Run the deterministic Rust tests:
 cargo test --locked
 ```
 
-A separate desktop integration test uses a temporary, hidden Kitty window with a local chat fixture. It consumes no model usage:
-
-```sh
-cargo build --locked
-python3 scripts/live_terminal_smoke.py
-```
-
-It tests real terminal input, a visible fixture reply, retry deduplication, draft protection, and disconnect. This is distinct from verifying the user's already-running LLM sessions; that requires the one-time bridge attachment and an actual send/read exchange.
-
-See [the verification report](live-terminal-verification.md) for completed checks and current attachment status.
+The tests build fake `/proc` trees and fake session logs, so they never depend on a running agent. Verifying delivery to a real session is a separate exercise: send to a chat you own and confirm the receipt, as recorded in [the native verification report](claude-native-verification.md).
 
 ## Receipt evidence
 
@@ -187,7 +137,7 @@ sender `status` and never resend, cancel, or manipulate another agent's queue.
 | `waiting` | No marker yet; the original process is alive (Codex must be idle/running). Claude policy can still hold or refuse input. |
 | `blocked` | No marker; the original Codex process is alive but its turn is aborted. Human interaction is required before the queue is collected. |
 | `lost` | The covered log range has no marker and the original PID/start time is gone or replaced. |
-| `unknown` | Coverage, process identity, or Codex state cannot be established. Cursor always returns this because it has no persistent receipt log. |
+| `unknown` | Coverage, process identity, or Codex state cannot be established. Absence of evidence is never reported as a failed delivery. |
 
 Aborted Codex sessions still accept messages. Their send result explains that
 waiting alone will not deliver the message; someone must interact with the terminal.
@@ -216,7 +166,7 @@ can produce a false positive. Use `live read` to verify the actual reply.
 
 After upgrading, reload the MCP connection and permit `soudan_live_delivery` in
 clients with explicit tool allowlists (Claude: `mcp__soudan__soudan_live_delivery`;
-Cursor: `Mcp(soudan:soudan_live_delivery)`; Codex: the corresponding tool entry
+Codex: the corresponding tool entry
 under its Soudan MCP permissions). Room posts still do not wake another session.
 
 For bounded room and receipt waits, see [waiting.md](waiting.md). A Claude message

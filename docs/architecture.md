@@ -6,7 +6,7 @@
 - `app.rs`: workspace setup, plugin discovery, job submission, and detached worker execution.
 - `store.rs`: SQLite messages, jobs, atomic idempotency records, and job admission limits.
 - `config.rs` / `process.rs`: executable plugin definitions, literal prompt transport, bounded output, timeout, and child cleanup.
-- `live.rs` / `codex.rs`: delivery into chats that are already open. Each agent uses its own best transport; the Kitty terminal path is the fallback for agents without a session API.
+- `live.rs` / `codex.rs` / `claude.rs`: delivery into chats that are already open. Every supported agent is reached through its own session API; an agent without one is not a live target rather than being typed into.
 - `install.rs`: client configuration merging and backups.
 
 Each MCP client starts its own Soudan server process. Servers for the same canonical workspace share `.soudan/state.db`. SQLite uses WAL and a five-second busy timeout. No TCP port, broker daemon, hosted service, or database installation is needed.
@@ -64,4 +64,4 @@ The context limit may reject a long discussion; begin a new room with a concise 
 
 ## Initial scope
 
-The transport is stdio MCP. Room participation is pull-based; notifications and sampling are not required. Messages can be delivered into chats that are already open. Codex is reached through its own session queue, with no setup. Claude Code uses its native peer inbox on Linux; Cursor uses the Kitty terminal transport after a one-time attachment; see [live chats](live-chats.md). Other GUI chats must explicitly use the room tools after loading the server. Remote authenticated transport, native editor-panel delivery, consultation cancellation, and plugin capability negotiation are possible extensions, not current features.
+The transport is stdio MCP. Room participation is pull-based; notifications and sampling are not required. Messages can be delivered into chats that are already open. Codex is reached through its own session queue, with no setup. Claude Code uses its native peer inbox on Linux; see [live chats](live-chats.md). Other GUI chats must explicitly use the room tools after loading the server. Remote authenticated transport, native editor-panel delivery, consultation cancellation, and plugin capability negotiation are possible extensions, not current features.

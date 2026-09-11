@@ -70,7 +70,7 @@ Pass the returned `job_id` to `soudan_result`. After completion, consult another
 
 Send directly into a chat that is already running, using whichever transport that agent offers.
 
-Codex uses its session queue. Claude Code uses its native inbox socket (experimental peer-protocol v1 adapter, Linux). Neither needs Kitty:
+Codex uses its session queue. Claude Code uses its native inbox socket (experimental peer-protocol v1 adapter, Linux). Neither needs a terminal, a keypress, or an idle chat:
 
 ```sh
 soudan live list
@@ -79,17 +79,7 @@ soudan live send <TARGET_ID> --request-id hello-1 'Hello from the other agent. P
 soudan live read <TARGET_ID>
 ```
 
-Only Cursor Agent uses the Kitty terminal transport, which needs a one-time attachment:
-
-```sh
-soudan live setup --via-pid <PID_FROM_LIST>
-# Press Ctrl+Shift+F12 once in the existing Kitty window.
-# Use --shortcut ctrl+shift+backslash to map a different key; one kitty.conf serves every project.
-```
-
-MCP clients can use `soudan_live_targets`, `soudan_live_read`, `soudan_live_send`, and `soudan_live_delivery` for the same workflow. See [live chat setup and verification](docs/live-chats.md). The destination is always the existing session; neither `queued` nor `submitted` is an answer, so read the target to see its reply.
-
-For clients outside this live transport, shared rooms remain available: ask each session to use `soudan_post` and `soudan_history` in the same workspace. `soudan_consult` continues to start separate headless sessions with room context.
+Cursor is not a live target. Its terminal transport has been removed; it returns when it exposes a session API. `soudan consult --agent cursor` is unaffected.
 
 ## Plugins
 
