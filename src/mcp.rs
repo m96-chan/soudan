@@ -54,6 +54,12 @@ struct LiveRead {
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct LiveNotify {
+    target: String,
+    text: String,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct LiveSend {
     sender: Option<String>,
     target: String,
@@ -64,9 +70,10 @@ impl Mcp {
     fn definitions() -> Vec<Tool> {
         let string = json!({"type":"string","minLength":1});
         [
-            ("soudan_live_targets", "Find existing interactive agent sessions in this workspace. These are open chats, not new headless sessions. Each is reached through its own session API: Codex through its queue, Claude Code through its registered inbox socket. Sessions running in another directory are not listed, because discovery matches the working directory exactly.", json!({}), vec![]),
+            ("soudan_live_notify", "Show an optional OpenCode toast, separate from message delivery. Does not modify the composer or prove a human saw it. Only use when notification is authorized.", json!({"target":string,"text":string}), vec!["target","text"]),
+            ("soudan_live_targets", "Find native agent sessions in this workspace. OpenCode lists API-addressable saved sessions on a running server, not proof of the session currently displayed by its TUI. Each is reached through its own session API: Codex through its queue, Claude Code through its registered inbox socket. Sessions running in another directory are not listed, because discovery matches the working directory exactly.", json!({}), vec![]),
             ("soudan_live_delivery", "Inspect a saved live delivery and derive receipt.status: taken, waiting, blocked, lost, or unknown. Sender status remains unchanged. Receipt is not proof of a reply. Never automatically resend based on this observation.", json!({"request_id":string}), vec!["request_id"]),
-            ("soudan_live_read", "Read an existing chat's current state. Codex and Claude Code return session state and the most recent reply text. State is read from the session's own log, so it reports what that agent recorded, not a live screen.", json!({"target":string}), vec!["target"]),
+            ("soudan_live_read", "Read an existing chat's current state. Codex, Claude Code and Grok return recorded session state and recent reply text. OpenCode returns session API state and the latest assistant message detail, not necessarily the reply to your request. No live screen is read.", json!({"target":string}), vec!["target"]),
             ("soudan_live_send", "Submit a message directly into an existing interactive chat. Only use when the user has authorized messaging that session. Optional sender is an unverified caller label, never a permission assertion. Requires a unique request_id; retries never resubmit uncertain deliveries. Codex and Claude Code both accept a message mid-turn, so neither has to be idle; Claude inbound policy may still hold or refuse it. The result carries a receipt observation, not an acknowledgement. Read the target, or wait on the agreed room, to see the reply. Do not create automatic reply loops.", json!({"target":string,"text":string,"request_id":string,"sender":string}), vec!["target","text","request_id"]),
             ("soudan_agents", "List agent plugins and local executable availability. Availability does not verify authentication.", json!({}), vec![]),
             ("soudan_consult", "Start an AI consultation and return a job ID immediately. Poll soudan_result for the answer. Reuse room for follow-up questions or invite another agent to the same discussion. Consultations use fresh headless CLI sessions with the recent room transcript.", json!({"agent":string,"prompt":{"type":"string","minLength":1,"maxLength":65536},"room":string,"request_id":string,"timeout_seconds":{"type":"integer","minimum":1,"maximum":600,"default":180}}), vec!["agent","prompt"]),
@@ -93,6 +100,10 @@ impl Mcp {
             "soudan_live_read" => {
                 let p: LiveRead = serde_json::from_value(args)?;
                 crate::live::read(&self.app.workspace, &p.target).await
+            }
+            "soudan_live_notify" => {
+                let p: LiveNotify = serde_json::from_value(args)?;
+                crate::live::notify(&self.app.workspace, &p.target, &p.text).await
             }
             "soudan_live_send" => {
                 let p: LiveSend = serde_json::from_value(args)?;

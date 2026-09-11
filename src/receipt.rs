@@ -155,3 +155,24 @@ pub fn observe(basis: Option<&Basis>, proc: &Path, target: &str, id: &str) -> Va
     };
     result().unwrap_or_else(|e| unknown(&format!("{e:#}")))
 }
+
+/// OpenCode uses a structural message ID, never the append-only log Basis.
+pub fn observe_opencode(
+    serialized: Option<&str>,
+    proc: &Path,
+    workspace: &Path,
+    target: &str,
+) -> Value {
+    let result = || -> Result<Value> {
+        let evidence: crate::opencode::Evidence = serde_json::from_str(
+            serialized
+                .ok_or_else(|| anyhow::anyhow!("No OpenCode message identity was recorded"))?,
+        )?;
+        ensure!(
+            evidence.session.workspace == workspace,
+            "OpenCode evidence belongs to another workspace"
+        );
+        Ok(crate::opencode::receipt(proc, &evidence, target))
+    };
+    result().unwrap_or_else(|e| unknown(&format!("{e:#}")))
+}

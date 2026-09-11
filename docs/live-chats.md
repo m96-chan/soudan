@@ -9,10 +9,11 @@ The transport depends on the agent, because a terminal is a poor substitute for 
 | Codex CLI | Codex's own session queue | none |
 | Claude Code | Native peer inbox socket (Linux) | messaging enabled in the target |
 | Grok Build | ACP through its shared leader process | `use_leader = true` before the chat is opened |
+| OpenCode | Published HTTP session API (Linux discovery) | loopback listener; see [setup](opencode.md) |
 
-A target's id names its transport, because each agent has exactly one: Codex ids begin `codex:`, Claude Code ids begin `claude:`, Grok Build ids begin `grok:`. There is no fallback between them. A session whose own API cannot be reached is reported as an error rather than reached some other way, because the alternative was typing into its terminal, and keystrokes cannot tell an empty composer from one holding somebody's unsent draft.
+A target's id names its transport, because each agent has exactly one: Codex ids begin `codex:`, Claude Code ids begin `claude:`, Grok Build ids begin `grok:`, and OpenCode ids begin `opencode:`. OpenCode targets are saved sessions addressable through a running server, not proof of which conversation its TUI displays. There is no fallback between them. A session whose own API cannot be reached is reported as an error rather than reached some other way, because the alternative was typing into its terminal, and keystrokes cannot tell an empty composer from one holding somebody's unsent draft.
 
-**Cursor is not supported here.** It was reached by typing into its terminal through a Kitty bridge, which needed a keypress to arm, could not protect a draft, and existed for that one agent. That transport has been removed. Cursor returns when it exposes a session API of its own; its headless plugin integration is unaffected and still works with `soudan consult`.
+**Cursor is not supported here.** It was reached by typing into its terminal through a Kitty bridge, which needed a keypress to arm, could not protect a draft, and existed for that one agent. That transport has been removed. Cursor ACP starts a separate process and does not attach to an already-running chat; its headless plugin integration is unaffected and still works with `soudan consult`.
 
 Native editor panels, browser chats, and terminal emulators in general are not targets: delivery goes to the agent, not to whatever is drawing it.
 
@@ -89,20 +90,21 @@ If a send is interrupted after its intent is recorded, its state stays `uncertai
 
 ## MCP workflow
 
-Reload the Soudan MCP connection after upgrading. Four live tools are available:
+Reload the Soudan MCP connection after upgrading. Five live tools are available:
 
 | Tool | Purpose |
 | --- | --- |
 | `soudan_live_targets` | Discover existing agent terminals in this workspace. |
-| `soudan_live_read` | Read one target's state: a Codex or Claude session's state and its most recent reply. |
+| `soudan_live_read` | Read one target's state: a native session's state and its most recent reply. |
 | `soudan_live_delivery` | Inspect a request ID and derive receipt evidence without resending. |
+| `soudan_live_notify` | Request an optional OpenCode TUI toast, separately from delivery. |
 | `soudan_live_send` | Deliver a message into one target's existing chat over that agent's transport. |
 
 Example request to a coordinating agent:
 
 > Use Soudan's live tools to send Claude Code a design question in its currently open chat. Read its reply, then send that reply to the open Codex session for critique. Show me which session received each message.
 
-Following the format in [setup.md](setup.md#noninteractive-tool-permissions), add the four live tool names to the clients you want to use as coordinators. Approving `soudan_live_send` allows direct input to the selected terminal; headless consultation workers are explicitly prohibited from using this send path.
+Following the format in [setup.md](setup.md#noninteractive-tool-permissions), add the required live tool names to the clients you want to use as coordinators. Approving `soudan_live_send` allows direct input to the selected terminal; headless consultation workers are explicitly prohibited from using this send path.
 
 ## Delivery checks and limits
 
@@ -126,6 +128,11 @@ cargo test --locked
 The tests build fake `/proc` trees and fake session logs, so they never depend on a running agent. Verifying delivery to a real session is a separate exercise: send to a chat you own and confirm the receipt, as recorded in [the native verification report](claude-native-verification.md).
 
 ## Receipt evidence
+
+OpenCode uses an exact user message ID from its session API instead of log
+markers. Its receipt can be `taken`, `waiting`, or `unknown`; see the
+[OpenCode evidence contract](opencode.md#delivery-and-receipt). The log boundary
+rules below describe the Codex, Claude Code, and Grok transports.
 
 `live send` includes a machine-readable `receipt` object. Inspect it again with
 `soudan live delivery <request_id>` or MCP `soudan_live_delivery` with

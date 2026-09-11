@@ -15,3 +15,5 @@ pub mod live;
 pub mod receipt;
 pub mod wait;
 pub mod web;
+
+pub mod opencode;

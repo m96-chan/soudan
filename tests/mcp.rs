@@ -73,7 +73,14 @@ async fn mcp_clients_share_rooms_and_jobs_survive_disconnect() {
     let tools = a
         .rpc(json!({"jsonrpc":"2.0","id":3,"method":"tools/list"}))
         .await;
-    assert_eq!(tools["result"]["tools"].as_array().unwrap().len(), 9);
+    assert_eq!(tools["result"]["tools"].as_array().unwrap().len(), 10);
+    assert!(
+        tools["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t["name"] == "soudan_live_notify")
+    );
     let posted = payload(
         a.call(
             "soudan_post",

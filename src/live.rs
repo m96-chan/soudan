@@ -58,7 +58,11 @@ pub fn discover_in(proc: &Path, workspace: &Path) -> Result<Vec<LiveTarget>> {
             continue;
         };
         if let Ok(Some(t)) = inspect(proc, workspace, pid) {
-            targets.push(t);
+            if t.agent == "opencode" {
+                targets.extend(crate::opencode::discover_in(proc, workspace, &t)?);
+            } else {
+                targets.push(t);
+            }
         }
     }
     targets.sort_by_key(|t| t.pid);
@@ -75,6 +79,8 @@ fn inspect(proc: &Path, workspace: &Path, pid: u32) -> Result<Option<LiveTarget>
         "claude-code"
     } else if exe.ends_with("/codex") {
         "codex"
+    } else if exe.ends_with("/opencode") || exe.ends_with("/opencode.exe") {
+        "opencode"
     } else if exe.contains("/.grok/") || exe.ends_with("/grok") {
         "grok"
     } else {
@@ -95,6 +101,7 @@ fn inspect(proc: &Path, workspace: &Path, pid: u32) -> Result<Option<LiveTarget>
     let transport = match agent {
         "codex" => "codex",
         "grok" => "grok",
+        "opencode" => "opencode",
         _ => "claude",
     };
     Ok(Some(LiveTarget {
@@ -221,6 +228,14 @@ fn native(_: &Path, _: &str) -> Result<Option<(LiveTarget, crate::codex::Session
 }
 
 pub async fn read(workspace: &Path, target: &str) -> Result<Value> {
+    if target.starts_with("opencode:") {
+        let workspace = workspace.to_owned();
+        let target = target.to_owned();
+        return tokio::task::spawn_blocking(move || {
+            crate::opencode::state(Path::new("/proc"), &workspace, &target)
+        })
+        .await?;
+    }
     if target.starts_with("grok:") {
         let t = resolve(workspace, target)?;
         let session = grok_session(workspace, &t)?;
@@ -254,7 +269,7 @@ pub async fn read(workspace: &Path, target: &str) -> Result<Value> {
 fn unsupported(target: &str) -> Result<Value> {
     let transport = target.split(':').next().unwrap_or(target);
     anyhow::bail!(
-        "No live transport for {transport:?} targets; Soudan delivers to Claude Code and Codex through their own session APIs"
+        "No live transport for {transport:?} targets; Soudan delivers to Claude Code, Codex, Grok, and OpenCode through their own session APIs"
     )
 }
 pub async fn send(workspace: &Path, target: &str, text: &str, request_id: &str) -> Result<Value> {
@@ -306,6 +321,17 @@ async fn send_inner(
         return Ok(
             json!({"request_id":request_id,"target":target,"status":status,"replayed":true}),
         );
+    }
+    if target.starts_with("opencode:") {
+        return send_opencode_in(
+            workspace,
+            target,
+            text,
+            request_id,
+            sender,
+            Path::new("/proc"),
+        )
+        .await;
     }
     if target.starts_with("grok:") {
         let t = resolve(workspace, target)?;
@@ -623,6 +649,87 @@ async fn send_to_claude(
     }
 }
 
+/// Injectable process root for deterministic HTTP transport tests.
+pub async fn send_opencode_in(
+    workspace: &Path,
+    target: &str,
+    text: &str,
+    request_id: &str,
+    sender: Option<&str>,
+    proc: &Path,
+) -> Result<Value> {
+    prompt(request_id, text, sender)?;
+    let session = crate::opencode::resolve_in(proc, workspace, target)?;
+    let evidence = crate::opencode::Evidence::new(session);
+    let db = rusqlite::Connection::open(workspace.join(".soudan/state.db"))?;
+    db.busy_timeout(Duration::from_secs(5))?;
+    delivery_schema(&db)?;
+    if let Claim::Recorded(status) = claim(
+        &db,
+        request_id,
+        target,
+        text,
+        ("", sender),
+        Some(&serde_json::to_string(&evidence)?),
+    )? {
+        return Ok(
+            json!({"request_id":request_id,"target":target,"status":status,"replayed":true}),
+        );
+    }
+    let (owned_evidence, owned_text, owned_id, owned_sender) = (
+        evidence.clone(),
+        text.to_owned(),
+        request_id.to_owned(),
+        sender.map(String::from),
+    );
+    let proc = proc.to_owned();
+    let result = tokio::task::spawn_blocking(move || {
+        crate::opencode::send(
+            &proc,
+            &owned_evidence,
+            &owned_text,
+            owned_sender.as_deref(),
+            &owned_id,
+        )
+    })
+    .await?;
+    match result {
+        Ok(()) => {
+            db.execute(
+                "UPDATE live_deliveries SET status='submitted' WHERE request_id=?1",
+                [request_id],
+            )?;
+            Ok(
+                json!({"request_id":request_id,"target":target,"status":"submitted","transport":"opencode_http","session":evidence.session.id,"message_id":evidence.message_id,"next":"Read the session API for the assistant reply. External messages are not rendered by the OpenCode TUI; receipt is not proof of a reply."}),
+            )
+        }
+        Err(failure) => {
+            let status = match failure {
+                crate::codex::Failure::NotAttempted(_) => "not_delivered",
+                crate::codex::Failure::Uncertain(_) => "uncertain",
+            };
+            let error = failure.into_error();
+            db.execute(
+                "UPDATE live_deliveries SET status=?2,error=?3 WHERE request_id=?1",
+                rusqlite::params![request_id, status, error.to_string()],
+            )?;
+            Err(error)
+        }
+    }
+}
+
+pub async fn notify(workspace: &Path, target: &str, text: &str) -> Result<Value> {
+    ensure!(
+        target.starts_with("opencode:"),
+        "Toast notifications are only available for OpenCode"
+    );
+    let (workspace, target, text) = (workspace.to_owned(), target.to_owned(), text.to_owned());
+    tokio::task::spawn_blocking(move || {
+        crate::opencode::notify(Path::new("/proc"), &workspace, &target, &text)
+    })
+    .await?
+}
+
 pub fn delivery(workspace: &Path, id: &str) -> Result<Value> {
     delivery_in(workspace, id, Path::new("/proc"))
 }
@@ -633,7 +740,7 @@ pub fn delivery_in(workspace: &Path, id: &str, proc: &Path) -> Result<Value> {
     let db = rusqlite::Connection::open(workspace.join(".soudan/state.db"))?;
     db.busy_timeout(Duration::from_secs(5))?;
     delivery_schema(&db)?;
-    delivery_row(&db, id, proc)
+    delivery_row(&db, workspace, id, proc)
 }
 
 /// Read receipt evidence without schema initialization or migration.
@@ -645,10 +752,15 @@ pub fn delivery_readonly(workspace: &Path, id: &str) -> Result<Value> {
 pub fn delivery_readonly_in(workspace: &Path, id: &str, proc: &Path) -> Result<Value> {
     validate_request_id(id)?;
     let db = crate::wait::open_readonly(workspace)?;
-    delivery_row(&db, id, proc)
+    delivery_row(&db, workspace, id, proc)
 }
 
-fn delivery_row(db: &rusqlite::Connection, id: &str, proc: &Path) -> Result<Value> {
+fn delivery_row(
+    db: &rusqlite::Connection,
+    workspace: &Path,
+    id: &str,
+    proc: &Path,
+) -> Result<Value> {
     let has_basis = {
         let mut q = db.prepare("PRAGMA table_info(live_deliveries)")?;
         q.query_map([], |r| r.get::<_, String>(1))?
@@ -662,6 +774,10 @@ fn delivery_row(db: &rusqlite::Connection, id: &str, proc: &Path) -> Result<Valu
         "SELECT target,text,status,error,NULL FROM live_deliveries WHERE request_id=?1"
     };
     let (mut row, basis) = db.query_row(sql, [id], |r| Ok((json!({"request_id":id,"target":r.get::<_,String>(0)?,"text":r.get::<_,String>(1)?,"status":r.get::<_,String>(2)?,"error":r.get::<_,Option<String>>(3)?}), r.get::<_,Option<String>>(4)?))).context("Live delivery not found")?;
+    let opencode_receipt = row["target"]
+        .as_str()
+        .filter(|t| t.starts_with("opencode:"))
+        .map(|target| crate::receipt::observe_opencode(basis.as_deref(), proc, workspace, target));
     let basis = basis.and_then(|s| serde_json::from_str::<crate::receipt::Basis>(&s).ok());
     let has_sender: bool = db.query_row(
         "SELECT EXISTS(SELECT 1 FROM pragma_table_info('live_deliveries') WHERE name='sender')",
@@ -679,12 +795,14 @@ fn delivery_row(db: &rusqlite::Connection, id: &str, proc: &Path) -> Result<Valu
         Value::Null
     };
     row["sender_verification"] = "unverified_declaration".into();
-    row["receipt"] = crate::receipt::observe(
-        basis.as_ref(),
-        proc,
-        row["target"].as_str().unwrap_or(""),
-        id,
-    );
+    row["receipt"] = opencode_receipt.unwrap_or_else(|| {
+        crate::receipt::observe(
+            basis.as_ref(),
+            proc,
+            row["target"].as_str().unwrap_or(""),
+            id,
+        )
+    });
     Ok(row)
 }
 pub fn validate_request_id(id: &str) -> Result<()> {

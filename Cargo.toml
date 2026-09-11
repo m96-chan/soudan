@@ -13,6 +13,7 @@ exclude = [".soudan/", ".mcp.json", ".cursor/", ".codex/", "soudan.toml", ".clau
 
 [dependencies]
 anyhow = "1.0.104"
+base64 = "0.23.1"
 clap = { version = "4.6.6", features = ["derive"] }
 libc = "0.2.189"
 rmcp = { version = "3.2.0", features = ["server", "transport-io"] }
@@ -21,6 +22,7 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 tokio = { version = "1.53.1", features = ["full"] }
 toml = "1.1.5"
+ureq = { version = "3.4.1", default-features = false }
 uuid = { version = "1.26.1", features = ["v4"] }
 
 [dev-dependencies]

@@ -101,6 +101,11 @@ enum LiveCommands {
         request_id: String,
     },
     List,
+    /// Show an optional OpenCode toast without sending a conversation prompt.
+    Notify {
+        target: String,
+        text: String,
+    },
     Read {
         target: String,
     },
@@ -213,6 +218,9 @@ async fn main() -> Result<()> {
                 soudan::live::delivery(&app.workspace, &request_id)?
             }
             LiveCommands::List => serde_json::to_value(soudan::live::discover(&app.workspace)?)?,
+            LiveCommands::Notify { target, text } => {
+                soudan::live::notify(&app.workspace, &target, &text).await?
+            }
             LiveCommands::Read { target } => soudan::live::read(&app.workspace, &target).await?,
             LiveCommands::Send {
                 sender,

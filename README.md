@@ -79,7 +79,9 @@ soudan live send <TARGET_ID> --request-id hello-1 'Hello from the other agent. P
 soudan live read <TARGET_ID>
 ```
 
-Cursor is not a live target. Its terminal transport has been removed; it returns when it exposes a session API. `soudan consult --agent cursor` is unaffected.
+Grok uses its shared leader; OpenCode uses its published HTTP session API. See [OpenCode setup and receipts](docs/opencode.md) for loopback startup, authentication, and API reply reading. Live sends accept `--sender codex`, an explicitly unverified sender label.
+
+Cursor is not a live target. Its terminal transport has been removed; its ACP interface does not attach to an already-running chat. `soudan consult --agent cursor` is unaffected.
 
 ## Plugins
 
@@ -97,6 +99,7 @@ New agents require no changes to the MCP server. Plugins run as child processes,
 
 ## Documentation
 
+- [OpenCode native sessions](docs/opencode.md)
 - [Send to existing terminal chats](docs/live-chats.md)
 - [Client setup and troubleshooting](docs/setup.md)
 - [Architecture, limits, and conversation semantics](docs/architecture.md)
