@@ -7,6 +7,9 @@ Install and authenticate the desired CLIs through their official distributions:
 - [Claude Code](https://code.claude.com/docs/en/setup): executable `claude`.
 - [Codex](https://developers.openai.com/codex/cli/): executable `codex`.
 - [Cursor Agent](https://cursor.com/docs/cli/overview): executable `cursor-agent`. If your installation only exposes `agent`, override the Cursor plugin as shown below.
+- [Grok Build](https://grok.com/): executable `grok`.
+- [OpenCode](https://opencode.ai/docs/): executable `opencode`.
+- [GitHub Copilot CLI](https://docs.github.com/copilot/how-tos/copilot-cli): executable `copilot`.
 
 Use `soudan doctor` to check executable discovery. This does not check authentication, subscription status, model availability, or network access. Test those with a short `soudan consult --agent NAME --wait 'Say hello'`.
 
@@ -27,9 +30,13 @@ Ensure the agent CLIs are on the PATH inherited by your editor. GUI applications
 | `claude-code` | `.mcp.json` |
 | `codex` | `.codex/config.toml` |
 | `cursor` | `.cursor/mcp.json` |
-| `all` | All three files |
+| `grok` | `.grok/config.toml` |
+| `opencode` | `opencode.json` |
+| `all` | All five files |
 
-The installer validates all selected configuration files before writing any of them, merges the `soudan` entry, retains other entries, and backs up changed originals next to their files. Repeated installation with the same settings is idempotent. JSON/TOML formatting is normalized; TOML comments are not retained in the rewritten file, but remain in the backup. Each replacement uses a temporary file and rename; the three-file operation is not a filesystem-wide transaction.
+The installer validates all selected configuration files before writing any of them, merges the `soudan` entry, retains other entries, and backs up changed originals next to their files. Repeated installation with the same settings is idempotent. JSON/TOML formatting is normalized; TOML comments are not retained in the rewritten file, but remain in the backup. Each replacement uses a temporary file and rename; the five-file operation is not a filesystem-wide transaction.
+
+Grok Build's table matches what `grok mcp add --scope project` writes, including `enabled = true`. OpenCode takes the executable and its arguments as a single `command` array, per its [published configuration schema](https://opencode.ai/config.json). OpenCode also accepts `opencode.jsonc`; because comments cannot survive a JSON rewrite and the two names may shadow each other, the installer refuses a workspace that already has `opencode.jsonc` and asks you to add the entry by hand.
 
 Restart or reload each client's MCP connection. This does not restart the editor or its existing chats automatically. Confirm that the `soudan_*` tools are visible, including three `soudan_live_*` tools after upgrading. Local client trust or approval settings still apply.
 

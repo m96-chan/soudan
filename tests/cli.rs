@@ -190,3 +190,117 @@ fn reinstall_preserves_soudan_client_options() {
         Some("approve")
     );
 }
+
+#[test]
+fn install_configures_grok_and_opencode_projects() {
+    let dir = tempfile::tempdir().unwrap();
+    for _ in 0..2 {
+        let output = bin()
+            .args([
+                "--workspace",
+                dir.path().to_str().unwrap(),
+                "install",
+                "--client",
+                "all",
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    // Grok Build reads project MCP servers from ./.grok/config.toml; the shape
+    // matches what `grok mcp add --scope project` writes.
+    let grok: toml::Value =
+        toml::from_str(&fs::read_to_string(dir.path().join(".grok/config.toml")).unwrap()).unwrap();
+    let server = &grok["mcp_servers"]["soudan"];
+    assert!(server["command"].as_str().unwrap().ends_with("soudan"));
+    assert_eq!(
+        server["args"].as_array().unwrap().last().unwrap().as_str(),
+        Some("serve")
+    );
+    assert_eq!(server["enabled"].as_bool(), Some(true));
+    // OpenCode reads opencode.json and takes the executable and its arguments
+    // as one `command` array, per https://opencode.ai/config.json.
+    let opencode: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(dir.path().join("opencode.json")).unwrap())
+            .unwrap();
+    let server = &opencode["mcp"]["soudan"];
+    assert_eq!(server["type"], "local");
+    assert_eq!(server["enabled"], true);
+    let command = server["command"].as_array().unwrap();
+    assert!(command[0].as_str().unwrap().ends_with("soudan"));
+    assert_eq!(command.last().unwrap(), "serve");
+}
+
+#[test]
+fn opencode_install_keeps_other_settings_and_refuses_an_ambiguous_jsonc() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(
+        dir.path().join("opencode.json"),
+        r#"{"mcp":{"existing":{"type":"local","command":["keep"]}},"model":"anthropic/claude"}"#,
+    )
+    .unwrap();
+    let install = |dir: &std::path::Path| {
+        bin()
+            .args([
+                "--workspace",
+                dir.to_str().unwrap(),
+                "install",
+                "--client",
+                "opencode",
+            ])
+            .status()
+            .unwrap()
+            .success()
+    };
+    assert!(install(dir.path()));
+    let opencode: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(dir.path().join("opencode.json")).unwrap())
+            .unwrap();
+    assert_eq!(opencode["model"], "anthropic/claude");
+    assert_eq!(opencode["mcp"]["existing"]["command"][0], "keep");
+    assert!(opencode["mcp"]["soudan"]["command"].is_array());
+    // A commented opencode.jsonc cannot be rewritten without discarding the
+    // comments, and writing opencode.json instead may be shadowed by it.
+    // Refuse rather than silently pick one.
+    fs::write(
+        dir.path().join("opencode.jsonc"),
+        "{\n  // keep this comment\n}\n",
+    )
+    .unwrap();
+    assert!(!install(dir.path()));
+}
+
+#[test]
+fn grok_install_preserves_unrelated_servers() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::create_dir_all(dir.path().join(".grok")).unwrap();
+    fs::write(
+        dir.path().join(".grok/config.toml"),
+        "[mcp_servers.existing]\ncommand = 'keep'\n",
+    )
+    .unwrap();
+    assert!(
+        bin()
+            .args([
+                "--workspace",
+                dir.path().to_str().unwrap(),
+                "install",
+                "--client",
+                "grok",
+            ])
+            .status()
+            .unwrap()
+            .success()
+    );
+    let grok: toml::Value =
+        toml::from_str(&fs::read_to_string(dir.path().join(".grok/config.toml")).unwrap()).unwrap();
+    assert_eq!(
+        grok["mcp_servers"]["existing"]["command"].as_str(),
+        Some("keep")
+    );
+    assert!(grok["mcp_servers"]["soudan"]["command"].is_str());
+}

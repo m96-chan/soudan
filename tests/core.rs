@@ -195,3 +195,63 @@ fn pagination_catches_up_without_skipping_and_keeps_latest_context() {
     assert_eq!(context.as_array().unwrap().len(), 20);
     assert_eq!(context[0]["text"], "message-185");
 }
+
+#[test]
+fn builtin_plugins_cover_the_products_soudan_delivers_to() {
+    use soudan::config::{Input, Output};
+    let config = Config::parse("").unwrap();
+    for name in [
+        "claude-code",
+        "codex",
+        "cursor",
+        "grok",
+        "opencode",
+        "copilot",
+    ] {
+        assert!(config.agents.contains_key(name), "missing builtin {name}");
+    }
+    // Verified against Grok Build locally: `-p` takes the prompt, and
+    // `--output-format plain` writes the answer alone to stdout while the
+    // banner goes to stderr. Its JSON form reports `text`, not the `result`
+    // field that Output::ResultJson requires, so plain text is the contract.
+    let grok = &config.agents["grok"];
+    assert_eq!(grok.command, "grok");
+    assert!(matches!(grok.input, Input::Argument));
+    assert!(matches!(grok.output, Output::Text));
+    assert_eq!(grok.args.last().unwrap(), "-p");
+    assert!(grok.args.windows(2).any(|pair| pair == ["--tools", ""]));
+    // Verified against OpenCode locally: `run --format json` is an NDJSON event
+    // stream that Output::ResultJson cannot parse, while the default format
+    // prints only the answer on stdout. `--agent plan` selects the read-only
+    // agent so a consultation does not edit the workspace.
+    let opencode = &config.agents["opencode"];
+    assert_eq!(opencode.command, "opencode");
+    assert!(matches!(opencode.input, Input::Argument));
+    assert!(matches!(opencode.output, Output::Text));
+    assert_eq!(opencode.args.first().unwrap(), "run");
+    assert!(
+        opencode
+            .args
+            .windows(2)
+            .any(|pair| pair == ["--agent", "plan"])
+    );
+}
+
+#[test]
+fn copilot_plugin_asks_without_shell_or_write_access() {
+    use soudan::config::{Input, Output};
+    let config = Config::parse("").unwrap();
+    // Verified against GitHub Copilot CLI 1.0.83 locally: `--output-format
+    // json` is JSONL rather than one object, so the text format is used and
+    // the answer arrives alone on stdout. `-p` takes the prompt, and a
+    // non-interactive run cannot confirm a tool, so shell and write are denied
+    // outright rather than left to a prompt that cannot be answered.
+    let copilot = &config.agents["copilot"];
+    assert_eq!(copilot.command, "copilot");
+    assert!(matches!(copilot.input, Input::Argument));
+    assert!(matches!(copilot.output, Output::Text));
+    assert_eq!(copilot.args.last().unwrap(), "-p");
+    assert!(copilot.args.iter().any(|arg| arg == "--deny-tool=shell"));
+    assert!(copilot.args.iter().any(|arg| arg == "--deny-tool=write"));
+    assert!(copilot.args.iter().any(|arg| arg == "--no-color"));
+}

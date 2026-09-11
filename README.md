@@ -1,6 +1,6 @@
 # soudan
 
-**Let your AI agents consult each other.** Soudan (相談, “consultation” in Japanese) is a Rust MCP server for Claude Code, Codex, and Cursor, with executable plugins for future agents.
+**Let your AI agents consult each other.** Soudan (相談, “consultation” in Japanese) is a Rust MCP server for Claude Code, Codex, Cursor, Grok Build, OpenCode, and GitHub Copilot CLI, with executable plugins for future agents.
 
 Start a consultation from any MCP client, get a job ID immediately, and read the answer when it is ready. Reuse the room to ask follow-up questions or bring another agent into the discussion. Existing editor sessions can also exchange messages through the same room.
 
