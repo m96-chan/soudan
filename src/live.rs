@@ -63,7 +63,7 @@ fn inspect(proc: &Path, workspace: &Path, pid: u32) -> Result<Option<LiveTarget>
     let window_id = match window {
         Some(window) => Some(std::str::from_utf8(window)?.parse()?),
         // Only agents delivered to through their terminal need a Kitty window.
-        None if agent != "codex" => return Ok(None),
+        None if agent == "cursor" => return Ok(None),
         None => None,
     };
     let stat = std::fs::read_to_string(path.join("stat"))?;
@@ -74,7 +74,11 @@ fn inspect(proc: &Path, workspace: &Path, pid: u32) -> Result<Option<LiveTarget>
         .context("Missing start time")?
         .parse()?;
     // The id names the transport, because each agent has exactly one.
-    let transport = if agent == "codex" { "codex" } else { "kitty" };
+    let transport = match agent {
+        "codex" => "codex",
+        "claude-code" => "claude",
+        _ => "kitty",
+    };
     Ok(Some(LiveTarget {
         id: format!("{transport}:{pid}:{start_time}"),
         agent: agent.into(),
@@ -186,6 +190,13 @@ fn native(_: &Path, _: &str) -> Result<Option<(LiveTarget, crate::codex::Session
 }
 
 pub async fn read(workspace: &Path, target: &str) -> Result<Value> {
+    if target.starts_with("claude:") {
+        let t = resolve(workspace, target)?;
+        let session = crate::claude::for_target(workspace, &t)?;
+        let mut state = crate::claude::state(&session)?;
+        state["target"] = serde_json::to_value(t)?;
+        return Ok(state);
+    }
     if let Some((t, session)) = native(workspace, target)? {
         let mut state = crate::codex::state(&session.rollout)?;
         state["kind"] = "codex_thread".into();
@@ -212,6 +223,11 @@ pub async fn send(workspace: &Path, target: &str, text: &str, request_id: &str) 
         return Ok(
             json!({"request_id":request_id,"target":target,"status":status,"replayed":true}),
         );
+    }
+    if target.starts_with("claude:") {
+        let t = resolve(workspace, target)?;
+        let session = crate::claude::for_target(workspace, &t)?;
+        return send_to_claude(workspace, &t, &session, text, request_id).await;
     }
     if let Some((t, session)) = native(workspace, target)? {
         return queue_to_codex(workspace, &t, &session, text, request_id).await;
@@ -350,6 +366,61 @@ async fn queue_to_codex(
             let status = match failure {
                 crate::codex::Failure::NotAttempted(_) => "not_delivered",
                 crate::codex::Failure::Uncertain(_) => "uncertain",
+            };
+            let error = failure.into_error();
+            db.execute(
+                "UPDATE live_deliveries SET status=?2,error=?3 WHERE request_id=?1",
+                params![request_id, status, error.to_string()],
+            )?;
+            Err(error)
+        }
+    }
+}
+
+async fn send_to_claude(
+    workspace: &Path,
+    target: &LiveTarget,
+    session: &crate::claude::Session,
+    text: &str,
+    request_id: &str,
+) -> Result<Value> {
+    use rusqlite::params;
+    let db = rusqlite::Connection::open(workspace.join(".soudan/state.db"))?;
+    db.busy_timeout(Duration::from_secs(5))?;
+    db.execute_batch(DELIVERIES)?;
+    let before = json!({"session":session.id,"status":session.status}).to_string();
+    if let Claim::Recorded(status) = claim(&db, request_id, &target.id, text, &before)? {
+        return Ok(
+            json!({"request_id":request_id,"target":target.id,"status":status,"replayed":true}),
+        );
+    }
+    let result = async {
+        let current = crate::claude::for_target(workspace, target)
+            .map_err(crate::codex::Failure::NotAttempted)?;
+        if current.id != session.id || current.socket != session.socket {
+            return Err(crate::codex::Failure::NotAttempted(anyhow::anyhow!(
+                "Claude session changed before delivery"
+            )));
+        }
+        crate::claude::send(&current, text, request_id).await
+    }
+    .await;
+    match result {
+        Ok(()) => {
+            db.execute(
+                "UPDATE live_deliveries SET status='submitted' WHERE request_id=?1",
+                [request_id],
+            )?;
+            Ok(
+                json!({"request_id":request_id,"target":target.id,"session":session.id,
+                "status":"submitted","transport":"claude_socket",
+                "next":"Written to Claude's inbox, not an acknowledgement. Its inbound policy may hold or refuse the message. Read the session to verify the reply."}),
+            )
+        }
+        Err(failure) => {
+            let status = match failure {
+                crate::codex::Failure::NotAttempted(_) => "not_delivered",
+                _ => "uncertain",
             };
             let error = failure.into_error();
             db.execute(
@@ -600,8 +671,8 @@ pub fn ensure_ready(agent: &str, screen: &str) -> Result<()> {
 /// cannot be told apart from one holding somebody's unsent draft.
 pub fn window_match(target: &LiveTarget) -> Result<String> {
     ensure!(
-        target.agent != "codex",
-        "Codex is reached through its session API, never through a terminal"
+        target.agent == "cursor",
+        "Only Cursor uses terminal delivery; Claude Code and Codex use native inboxes"
     );
     let window = target
         .window_id

@@ -8,5 +8,6 @@ pub mod app;
 pub mod install;
 pub mod mcp;
 
+pub mod claude;
 pub mod codex;
 pub mod live;

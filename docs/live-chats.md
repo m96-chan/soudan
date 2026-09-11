@@ -7,12 +7,12 @@ The transport depends on the agent, because a terminal is a poor substitute for 
 | Agent | Transport | Setup |
 | --- | --- | --- |
 | Codex CLI | Codex's own session queue | none |
-| Claude Code | Linux + Kitty terminal | one-time bridge attachment |
+| Claude Code | Native peer inbox socket (Linux) | messaging enabled in the target |
 | Cursor Agent CLI | Linux + Kitty terminal | one-time bridge attachment |
 
-A target's id names its transport, because each agent has exactly one. Codex ids begin `codex:`, terminal-driven ids begin `kitty:`. There is no fallback between them: keystroke automation cannot reliably tell an empty composer from one holding a draft, so a Codex session whose thread cannot be read is reported as an error rather than typed into.
+A target's id names its transport, because each agent has exactly one. Codex ids begin `codex:`, Claude Code ids begin `claude:`, and Cursor ids begin `kitty:`. There is no fallback between them: keystroke automation cannot reliably tell an empty composer from one holding a draft, so a Codex session whose thread cannot be read is reported as an error rather than typed into.
 
-Claude Code has its own cross-session messaging and Soudan does not use it yet; that is a possible extension, not a current feature. Cursor Agent CLI has no equivalent at all, so the terminal transport is the only way to reach it. Native Cursor editor panels, browser chats, and other terminal emulators are not supported. The existing headless plugin integrations remain available on their previously supported platforms.
+Claude Code uses its cross-session inbox as described below. Cursor Agent CLI currently uses terminal delivery. Native Cursor editor panels, browser chats, and other terminal emulators are not supported. The existing headless plugin integrations remain available on their previously supported platforms.
 
 ## Codex sessions need no setup
 
@@ -41,11 +41,37 @@ soudan live read codex:900463:210017161
 
 Codex accepts a message **even while it is working**, and answers it in order. There is no draft to protect and no idle composer to wait for, so none of the terminal restrictions below apply. `codex` must be on `PATH`; when it is missing the delivery is recorded as `not_delivered` and the same request ID may be retried, because a command that never ran cannot have delivered anything.
 
-The sections below cover the Kitty transport, which Claude Code and Cursor use.
+The Kitty sections below apply only to Cursor.
+
+## Claude Code sessions: native inbox, no Kitty
+
+Use the current Soudan binary and reload the Soudan MCP server in the sending client after upgrading. The receiving Claude session does not need a new MCP server, channels flag, bridge, or restart when its native inbox is already enabled.
+
+```sh
+soudan live list
+# Copy the exact claude: target ID returned above.
+soudan live read claude:12345:67890
+soudan live send claude:12345:67890 --request-id claude-review-1 \
+  'From Codex: please review the latest change and reply here.'
+soudan live delivery claude-review-1
+soudan live read claude:12345:67890
+```
+
+The same route is available through `soudan_live_targets`, `soudan_live_send`, and `soudan_live_read`. Discovery is currently Linux-only and scoped to interactive processes in the exact workspace. Claude does not need `KITTY_WINDOW_ID`.
+
+Soudan reads the selected process's `CLAUDE_CONFIG_DIR` (or `HOME/.claude`), then its `sessions/<pid>.json` record. It checks workspace, PID, process start time, canonical session UUID, and peer protocol 1. Before writing, it validates the socket type, directory ownership, connected peer UID/PID, and process lifetime. It does not read recipient auth keys or claim a permission class. A missing or unsupported inbox is an error, never a terminal fallback.
+
+**Compatibility:** the inbox is a documented Claude feature, but its JSON wire format and registry layout are not a versioned public SDK contract. This adapter is experimental, targets peer protocol 1, and was inspected against Claude Code 2.1.268. Unknown protocol versions are refused. Upgrades should rerun the socket tests and a bounded live test; compatibility with all future versions is not promised. A protocol change can make Claude delivery unavailable until this adapter is updated; Kitty cannot be selected as a workaround in this implementation.
+
+`submitted` means the message was written to the inbox. Claude may hold or refuse it according to `crossSessionInbound` and its permission mode. If Claude displays an approval dialog, approve it in that session if desired. Soudan never changes these controls. `not_delivered` is retryable with identical arguments; write failures are `uncertain` and are not automatically retried. Delivery history is committed before writing.
+
+`read` returns `kind: claude_session`, `session`, `status`, `last_agent_message`, and `transcript_available`. Status comes from the registry (`busy` becomes `running`; unrecognized states become `unknown`). Reply text is the latest matching assistant text in the last 256 KiB of the session transcript, possibly an intermediate response or an older reply. A missing transcript returns null rather than blocking delivery. Verify a unique request marker; a successful write is not an answer. Replies remain visible in the original chat. There is no automatic reply loop or reverse socket address in this first adapter.
+
+See the [official cross-session messaging documentation](https://code.claude.com/docs/en/cross-session-messaging#the-sessions-inbox-socket) for availability, inbound controls, and socket configuration.
 
 ## Connect without restarting your chats
 
-This applies to Claude Code and Cursor targets only. Install the current binary, then discover the running chats in your project:
+This applies to Cursor targets only. Install the current binary, then discover the running chats in your project:
 
 ```sh
 cargo install --path /path/to/soudan --locked --force
@@ -91,7 +117,7 @@ Reload the Soudan MCP connection after upgrading. Three additional tools are ava
 | Tool | Purpose |
 | --- | --- |
 | `soudan_live_targets` | Discover existing agent terminals in this workspace. |
-| `soudan_live_read` | Read one target's state: a Codex thread's status and last reply, or another agent's visible terminal screen. |
+| `soudan_live_read` | Read one target's state: a Codex or Claude session's state and recent reply, or Cursor's visible terminal screen. |
 | `soudan_live_send` | Deliver a message into one target's existing chat over that agent's transport. |
 
 Example request to a coordinating agent:

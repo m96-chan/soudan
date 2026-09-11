@@ -70,7 +70,7 @@ Pass the returned `job_id` to `soudan_result`. After completion, consult another
 
 Send directly into a chat that is already running, using whichever transport that agent offers.
 
-Codex needs no setup, because Codex has a session API:
+Codex uses its session queue. Claude Code uses its native inbox socket (experimental peer-protocol v1 adapter, Linux). Neither needs Kitty:
 
 ```sh
 soudan live list
@@ -79,7 +79,7 @@ soudan live send <TARGET_ID> --request-id hello-1 'Hello from the other agent. P
 soudan live read <TARGET_ID>
 ```
 
-Claude Code and Cursor Agent have no such path here, so on Linux they are reached by driving their Kitty terminal, which needs a one-time attachment:
+Only Cursor Agent uses the Kitty terminal transport, which needs a one-time attachment:
 
 ```sh
 soudan live setup --via-pid <PID_FROM_LIST>

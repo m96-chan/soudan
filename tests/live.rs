@@ -37,7 +37,7 @@ fn discovery_only_returns_workspace_agent_terminals_with_stable_identity() {
     let targets = discover_in(&proc, dir.path()).unwrap();
     assert_eq!(targets.len(), 2);
     assert_eq!(targets[0].agent, "claude-code");
-    assert_eq!(targets[0].id, "kitty:42:12345");
+    assert_eq!(targets[0].id, "claude:42:12345");
     assert!(!serde_json::to_string(&targets).unwrap().contains("SECRET"));
     assert!(validate_target(&proc, dir.path(), &targets[0]).is_ok());
     fixture_stat(&proc, 42, 987);
@@ -144,7 +144,7 @@ fn codex_is_discoverable_without_a_kitty_window() {
     let targets = discover_in(&proc, dir.path()).unwrap();
     let ids: Vec<_> = targets.iter().map(|t| t.id.as_str()).collect();
     // The id names the transport, and Codex is never delivered to through Kitty.
-    assert_eq!(ids, ["codex:42:12345", "codex:43:12345"]);
+    assert_eq!(ids, ["codex:42:12345", "codex:43:12345", "claude:44:12345"]);
     assert_eq!(targets[0].window_id, Some(53));
     assert_eq!(targets[1].window_id, None);
 }
@@ -193,7 +193,7 @@ async fn a_settled_delivery_is_reported_even_though_its_chat_has_ended() {
 }
 
 #[test]
-fn the_terminal_transport_refuses_codex_even_when_it_is_asked_directly() {
+fn the_terminal_transport_only_accepts_cursor_even_when_asked_directly() {
     let mut t = LiveTarget {
         id: "codex:42:12345".into(),
         agent: "codex".into(),
@@ -202,9 +202,11 @@ fn the_terminal_transport_refuses_codex_even_when_it_is_asked_directly() {
         window_id: Some(53),
         tty: "/dev/pts/99".into(),
     };
-    // The bridge may resolve a target the sending process could not, so it cannot
-    // rely on the sender having routed Codex to its session API.
+    // The bridge enforces Cursor-only routing itself, even for direct requests.
+    // Claude Code and Codex must use their native inboxes regardless of window ID.
     assert!(soudan::live::window_match(&t).is_err());
     t.agent = "claude-code".into();
+    assert!(soudan::live::window_match(&t).is_err());
+    t.agent = "cursor".into();
     assert_eq!(soudan::live::window_match(&t).unwrap(), "id:53");
 }

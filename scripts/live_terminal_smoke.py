@@ -11,7 +11,8 @@ import time
 binary = str(pathlib.Path("target/debug/soudan").resolve())
 with tempfile.TemporaryDirectory(prefix="soudan-terminal-") as directory:
     root = pathlib.Path(directory)
-    executable = root / "claude"
+    executable = root / "cursor-agent" / "node"
+    executable.parent.mkdir()
     shutil.copyfile(shutil.which("python3"), executable)
     executable.chmod(0o700)
     chat = root / "chat.py"

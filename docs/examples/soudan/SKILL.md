@@ -5,9 +5,9 @@ description: Consult another AI agent through the Soudan MCP tools, or exchange 
 
 # Soudan consultation
 
-When the user asks to talk in an **already-open chat**, use `soudan_live_targets` and identify the intended session. Read it with `soudan_live_read`, then send with `soudan_live_send` using its exact target ID and a unique request ID. The Kitty bridge must already be attached; setup instructions are in `docs/live-chats.md` in the Soudan project. Do not silently substitute a new headless session for a requested existing chat.
+When the user asks to talk in an **already-open chat**, use `soudan_live_targets` and identify the intended session. Read it with `soudan_live_read`, then send with `soudan_live_send` using its exact target ID and a unique request ID. Claude Code targets (`claude:`) use their native inbox; Codex targets (`codex:`) use the session queue. Only Cursor (`kitty:`) requires the Kitty bridge. See `docs/live-chats.md` for setup. Do not silently substitute a new headless session for a requested existing chat.
 
-A live send returns `submitted`, not an acknowledgement. Read the screen after the target finishes and verify its actual reply. A terminal snapshot includes user and status text as well as assistant output. Relay replies only as needed for the user's requested discussion. A draft/busy refusal must be respected; do not clear input or retry with a new ID to bypass it. An `uncertain` send must be inspected before any deliberate new attempt. Do not create automatic reply loops.
+A live send returns `submitted` (Claude/terminal) or `queued` (Codex), not an acknowledgement. Read the target after it finishes and verify a reply matching your request. Claude inbound policy can hold or refuse a submitted message; never change that policy or claim a sender permission class to get around it. A terminal snapshot includes user and status text as well as assistant output. Relay replies only as needed for the user's requested discussion. A draft/busy refusal must be respected; do not clear input or retry with a new ID to bypass it. An `uncertain` send must be inspected before any deliberate new attempt. Do not create automatic reply loops.
 
 Use `soudan_agents` to discover configured targets. A listed executable is not proof that its account is authenticated.
 

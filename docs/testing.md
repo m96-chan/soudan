@@ -71,3 +71,9 @@ See [the live verification report](live-verification.md) for real client results
 `tests/live.rs` verifies process identity checks, input validation, busy/draft rejection, and reversible Kitty shortcut setup. MCP tests cover discovery and offline errors for the live tools.
 
 `python3 scripts/live_terminal_smoke.py` requires a working Kitty desktop. It uses a temporary hidden Kitty instance and a deterministic local chat fixture to verify actual terminal input, visible replies, deduplication, draft protection, and disconnect. It does not invoke paid models. See [the terminal verification report](live-terminal-verification.md) for the distinction between these checks and the user's currently open LLM sessions.
+
+## Claude native inbox tests
+
+`tests/claude.rs` uses temporary session registries and an in-process Unix socket peer. No authenticated model or user chat is required. It tests process/workspace/protocol matching, single-line JSON framing, native submission, wrong-peer rejection, missing/symlinked sockets, and session-scoped transcript reads. `tests/live.rs` covers native discovery without Kitty and refusal to route native agents through the terminal.
+
+A live check must use a session in the requested workspace and a unique verification marker. Check `soudan live delivery` and `soudan live read` separately: a submitted socket write is not proof that Claude's inbound policy delivered the message or that the model replied. See [Claude native verification](claude-native-verification.md).
