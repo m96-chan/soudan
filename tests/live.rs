@@ -148,3 +148,63 @@ fn codex_is_discoverable_without_a_kitty_window() {
     assert_eq!(targets[0].window_id, Some(53));
     assert_eq!(targets[1].window_id, None);
 }
+
+/// Seed the record an interrupted sender would have left behind.
+fn record(workspace: &Path, request_id: &str, target: &str, text: &str, status: &str) {
+    let db = rusqlite::Connection::open(workspace.join(".soudan/state.db")).unwrap();
+    db.execute_batch("CREATE TABLE IF NOT EXISTS live_deliveries(request_id TEXT PRIMARY KEY,target TEXT NOT NULL,text TEXT NOT NULL,status TEXT NOT NULL,before_screen TEXT NOT NULL,error TEXT);").unwrap();
+    db.execute(
+        "INSERT INTO live_deliveries VALUES(?1,?2,?3,?4,'',NULL)",
+        rusqlite::params![request_id, target, text, status],
+    )
+    .unwrap();
+}
+
+#[tokio::test]
+async fn a_settled_delivery_is_reported_even_though_its_chat_has_ended() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join(".soudan")).unwrap();
+    record(dir.path(), "r1", "codex:42:12345", "hello", "submitted");
+
+    // Nothing in this workspace can be resolved, which is exactly the case that
+    // used to lose the verdict: the sender that never saw the first reply must
+    // still learn that the message went out.
+    let value = soudan::live::send(dir.path(), "codex:42:12345", "hello", "r1")
+        .await
+        .unwrap();
+    assert_eq!(value["status"], "submitted");
+    assert_eq!(value["replayed"], true);
+
+    // The same id carrying a different message stays a mistake, not a replay.
+    assert!(
+        soudan::live::send(dir.path(), "codex:42:12345", "other", "r1")
+            .await
+            .is_err()
+    );
+
+    // A delivery that provably never happened is retryable, so it goes on to the
+    // target and fails there instead of replaying.
+    record(dir.path(), "r2", "codex:42:12345", "hello", "not_delivered");
+    assert!(
+        soudan::live::send(dir.path(), "codex:42:12345", "hello", "r2")
+            .await
+            .is_err()
+    );
+}
+
+#[test]
+fn the_terminal_transport_refuses_codex_even_when_it_is_asked_directly() {
+    let mut t = LiveTarget {
+        id: "codex:42:12345".into(),
+        agent: "codex".into(),
+        pid: 42,
+        start_time: 12345,
+        window_id: Some(53),
+        tty: "/dev/pts/99".into(),
+    };
+    // The bridge may resolve a target the sending process could not, so it cannot
+    // rely on the sender having routed Codex to its session API.
+    assert!(soudan::live::window_match(&t).is_err());
+    t.agent = "claude-code".into();
+    assert_eq!(soudan::live::window_match(&t).unwrap(), "id:53");
+}

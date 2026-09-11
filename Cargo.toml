@@ -24,4 +24,6 @@ toml = "1.1.5"
 uuid = { version = "1.26.1", features = ["v4"] }
 
 [dev-dependencies]
+# Delivery records are the contract under test, so tests seed them directly.
+rusqlite = { version = "0.40.2", features = ["bundled"] }
 tempfile = "3.27.0"

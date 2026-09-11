@@ -208,6 +208,11 @@ pub async fn send(workspace: &Path, target: &str, text: &str, request_id: &str) 
     );
     validate_message(text)?;
     validate_request_id(request_id)?;
+    if let Some(status) = settled(workspace, request_id, target, text)? {
+        return Ok(
+            json!({"request_id":request_id,"target":target,"status":status,"replayed":true}),
+        );
+    }
     if let Some((t, session)) = native(workspace, target)? {
         return queue_to_codex(workspace, &t, &session, text, request_id).await;
     }
@@ -230,11 +235,63 @@ enum Claim {
     Recorded(String),
 }
 
+/// The decided outcome of a request id, or `None` if the id is still usable.
+///
+/// An id is usable when it has never been seen, or when its record proves the
+/// message was never handed over. Every other status is final: reporting it is
+/// the only correct answer, because a resend could duplicate a live message.
+fn recorded(
+    db: &rusqlite::Connection,
+    request_id: &str,
+    target: &str,
+    text: &str,
+) -> Result<Option<String>> {
+    use rusqlite::OptionalExtension;
+    let previous: Option<(String, String, String)> = db
+        .query_row(
+            "SELECT target,text,status FROM live_deliveries WHERE request_id=?1",
+            [request_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()?;
+    let Some((old_target, old_text, status)) = previous else {
+        return Ok(None);
+    };
+    ensure!(
+        old_target == target && old_text == text,
+        "request_id was already used with different arguments"
+    );
+    Ok((status != "not_delivered").then_some(status))
+}
+
+/// Answer a settled delivery before its target is touched at all.
+///
+/// Resolving a target, reading its screen and checking that it is idle each fail
+/// for reasons that have nothing to do with this request: the chat has ended, or
+/// it is mid-turn. A sender that never saw the first reply still has to be able to
+/// learn what became of it, so the stored verdict is returned first and only a
+/// reusable id goes on to inspect the target.
+pub fn settled(
+    workspace: &Path,
+    request_id: &str,
+    target: &str,
+    text: &str,
+) -> Result<Option<String>> {
+    let db = rusqlite::Connection::open(workspace.join(".soudan/state.db"))?;
+    db.busy_timeout(Duration::from_secs(5))?;
+    db.execute_batch(DELIVERIES)?;
+    recorded(&db, request_id, target, text)
+}
+
 /// Claim a request id, or report what an earlier attempt recorded for it.
 ///
 /// The lookup and the reservation share one immediate transaction, so two senders
 /// racing on the same id cannot both believe they are the first. Without it the
 /// loser fails on the primary key instead of replaying the winner's result.
+///
+/// The transaction is held by value so that every exit which is not a successful
+/// commit rolls back, a commit that itself fails included. A caller that keeps its
+/// connection open — the bridge does — must never inherit a half-open transaction.
 fn claim(
     db: &rusqlite::Connection,
     request_id: &str,
@@ -242,44 +299,20 @@ fn claim(
     text: &str,
     before: &str,
 ) -> Result<Claim> {
-    use rusqlite::{OptionalExtension, params};
-    db.execute_batch("BEGIN IMMEDIATE")?;
-    let claimed = (|| {
-        let previous: Option<(String, String, String)> = db
-            .query_row(
-                "SELECT target,text,status FROM live_deliveries WHERE request_id=?1",
-                [request_id],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-            )
-            .optional()?;
-        let Some((old_target, old_text, status)) = previous else {
-            db.execute("INSERT INTO live_deliveries(request_id,target,text,status,before_screen) VALUES(?1,?2,?3,'uncertain',?4)",params![request_id,target,text,before])?;
-            return Ok(Claim::Reserved);
-        };
-        ensure!(
-            old_target == target && old_text == text,
-            "request_id was already used with different arguments"
-        );
-        // Only a recorded non-delivery is safe to retry under the same id.
-        if status != "not_delivered" {
-            return Ok(Claim::Recorded(status));
-        }
-        db.execute(
-            "UPDATE live_deliveries SET status='uncertain',error=NULL,before_screen=?2 WHERE request_id=?1",
-            params![request_id, before],
-        )?;
-        Ok(Claim::Reserved)
-    })();
-    match claimed {
-        Ok(claimed) => {
-            db.execute_batch("COMMIT")?;
-            Ok(claimed)
-        }
-        Err(error) => {
-            let _ = db.execute_batch("ROLLBACK");
-            Err(error)
-        }
+    use rusqlite::{TransactionBehavior, params};
+    let tx = rusqlite::Transaction::new_unchecked(db, TransactionBehavior::Immediate)?;
+    if let Some(status) = recorded(&tx, request_id, target, text)? {
+        // Nothing was written, so letting this roll back on the way out is right.
+        return Ok(Claim::Recorded(status));
     }
+    // The row may already exist as a proven non-delivery, which recorded() cleared
+    // for reuse; either way the claim resets it to this attempt.
+    tx.execute(
+        "INSERT INTO live_deliveries(request_id,target,text,status,before_screen) VALUES(?1,?2,?3,'uncertain',?4) ON CONFLICT(request_id) DO UPDATE SET status='uncertain',error=NULL,before_screen=excluded.before_screen",
+        params![request_id, target, text, before],
+    )?;
+    tx.commit()?;
+    Ok(Claim::Reserved)
 }
 
 /// Deliver through Codex's queue, recording intent exactly as the terminal path does.
@@ -430,6 +463,13 @@ async fn handle(workspace: &Path, db: &rusqlite::Connection, req: Request) -> Re
         } => {
             validate_message(&text)?;
             validate_request_id(&request_id)?;
+            // A settled delivery is reported before the target is touched; a direct
+            // bridge request gets the same answer as one routed through send().
+            if let Some(status) = recorded(db, &request_id, &target, &text)? {
+                return Ok(
+                    json!({"request_id":request_id,"target":target,"status":status,"replayed":true}),
+                );
+            }
             let t = resolve(workspace, &target)?;
             let match_id = window_match(&t)?;
             validate_terminal(workspace, &t)?;
@@ -553,7 +593,16 @@ pub fn ensure_ready(agent: &str, screen: &str) -> Result<()> {
     Ok(())
 }
 /// Kitty addresses a window, so a target without one cannot be driven this way.
-fn window_match(target: &LiveTarget) -> Result<String> {
+///
+/// Codex is refused here and not only in native(), which hands an unresolvable id
+/// to the bridge. Discovery can succeed in the bridge while failing in the process
+/// that asked it, and a Codex chat must never be driven by keystrokes: its composer
+/// cannot be told apart from one holding somebody's unsent draft.
+pub fn window_match(target: &LiveTarget) -> Result<String> {
+    ensure!(
+        target.agent != "codex",
+        "Codex is reached through its session API, never through a terminal"
+    );
     let window = target
         .window_id
         .context("Target has no Kitty window; it cannot be reached through the terminal")?;

@@ -1,6 +1,9 @@
 #![cfg(target_os = "linux")]
 use soudan::codex::{Session, session, state};
-use std::{os::unix::fs::symlink, path::Path};
+use std::{
+    os::unix::fs::{PermissionsExt, symlink},
+    path::Path,
+};
 
 const THREAD: &str = "01a08b4c-411f-7e70-a0d7-66b89fdb59c7";
 
@@ -134,13 +137,26 @@ fn an_ambiguous_process_is_refused_rather_than_guessed() {
 }
 
 #[tokio::test]
-async fn a_command_that_never_ran_stays_retryable() {
+async fn only_a_command_that_never_started_stays_retryable() {
+    use soudan::codex::Failure;
     let dir = tempfile::tempdir().unwrap();
+    let codex = dir.path().join("codex");
     // SAFETY: the test binary is single-threaded here and restores nothing it needs.
     unsafe { std::env::set_var("PATH", dir.path()) };
-    let failure = soudan::codex::queue(THREAD, "hello").await.unwrap_err();
-    assert!(
-        matches!(failure, soudan::codex::Failure::NotAttempted(_)),
-        "a missing binary delivered nothing, so the request id must stay reusable"
-    );
+
+    // A missing binary never ran, so the request id is still free.
+    let missing = soudan::codex::queue(THREAD, "hello").await.unwrap_err();
+    assert!(matches!(missing, Failure::NotAttempted(_)));
+
+    // Neither did one that could not be executed.
+    std::fs::write(&codex, "#!/bin/sh\nexit 0\n").unwrap();
+    let refused = soudan::codex::queue(THREAD, "hello").await.unwrap_err();
+    assert!(matches!(refused, Failure::NotAttempted(_)));
+
+    // Once it has started, nothing it reports says how far it got. Treating a
+    // post-start failure as untried would hand the same message over twice.
+    std::fs::set_permissions(&codex, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::write(&codex, "#!/bin/sh\necho refused >&2\nexit 3\n").unwrap();
+    let started = soudan::codex::queue(THREAD, "hello").await.unwrap_err();
+    assert!(matches!(started, Failure::Uncertain(_)));
 }

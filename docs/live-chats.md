@@ -82,7 +82,7 @@ The target chat receives a visibly labelled message such as `[Soudan design-ques
 
 `submitted` means Kitty accepted the paste and Enter operations. It is **not** proof of a model response. `live read` returns a `terminal_snapshot`; terminal output includes prompts, user messages, status text, and assistant responses. Verify the visible exchange rather than treating the entire snapshot as an assistant answer.
 
-If a send is interrupted after its intent is recorded, its state stays `uncertain`. Repeating its request ID never resubmits it, even if the original send may have failed. Inspect the target before deciding whether to create a new request. Reusing an ID with different text or a different target is rejected. Live request IDs contain 1–128 ASCII letters, digits, hyphens, underscores, periods, or colons.
+If a send is interrupted after its intent is recorded, its state stays `uncertain`. Repeating its request ID never resubmits it, even if the original send may have failed; the recorded outcome comes back with `"replayed": true`. That answer is given before the target is looked at, so an ID whose fate is already decided still reports it after the chat has ended or while it is mid-turn. Inspect the target before deciding whether to create a new request. Reusing an ID with different text or a different target is rejected. Live request IDs contain 1–128 ASCII letters, digits, hyphens, underscores, periods, or colons.
 
 ## MCP workflow
 

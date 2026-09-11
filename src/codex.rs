@@ -6,6 +6,7 @@ use anyhow::{Result, bail, ensure};
 use serde_json::{Value, json};
 use std::{
     path::{Path, PathBuf},
+    process::Stdio,
     time::Duration,
 };
 
@@ -163,25 +164,41 @@ pub fn state(rollout: &Path) -> Result<Value> {
 }
 
 /// Hand a message to Codex for an existing thread. A busy session queues it.
+///
+/// Spawning is kept separate from waiting because that split is the whole
+/// classification. A `spawn` that fails means no `codex` process ever existed, so
+/// nothing can have been delivered. Every later failure — a broken pipe on its
+/// output, a wait that errors, a timeout — can happen after Codex has already
+/// taken the message, so those stay uncertain and the id is not reusable.
 pub async fn queue(thread: &str, text: &str) -> std::result::Result<(), Failure> {
-    let started = tokio::time::timeout(
-        Duration::from_secs(30),
-        tokio::process::Command::new("codex")
-            .args(["queue", "--thread", thread, "--message", text])
-            .kill_on_drop(true)
-            .output(),
-    );
+    let spawned = tokio::process::Command::new("codex")
+        .args(["queue", "--thread", thread, "--message", text])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn();
     // A command that never started cannot have delivered anything.
-    let output = match started.await {
+    let child = match spawned {
+        Err(error) => {
+            return Err(Failure::NotAttempted(anyhow::Error::new(error).context(
+                "Cannot run codex; it must be on PATH to reach an open session",
+            )));
+        }
+        Ok(child) => child,
+    };
+    let output = match tokio::time::timeout(Duration::from_secs(30), child.wait_with_output()).await
+    {
         Err(elapsed) => {
             return Err(Failure::Uncertain(
                 anyhow::Error::new(elapsed).context("codex queue timed out"),
             ));
         }
         Ok(Err(error)) => {
-            return Err(Failure::NotAttempted(anyhow::Error::new(error).context(
-                "Cannot run codex; it must be on PATH to reach an open session",
-            )));
+            return Err(Failure::Uncertain(
+                anyhow::Error::new(error)
+                    .context("codex queue started but its outcome could not be read"),
+            ));
         }
         Ok(Ok(output)) => output,
     };
