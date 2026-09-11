@@ -101,7 +101,7 @@ pub fn observe(basis: Option<&Basis>, proc: &Path, target: &str, id: &str) -> Va
     let result = || -> Result<Value> {
         let parts: Vec<_> = target.split(':').collect();
         ensure!(
-            parts.len() == 3 && matches!(parts[0], "codex" | "claude"),
+            parts.len() == 3 && matches!(parts[0], "codex" | "claude" | "grok"),
             "Transport has no persistent receipt evidence"
         );
         let basis = basis.ok_or_else(|| {
@@ -143,6 +143,11 @@ pub fn observe(basis: Option<&Basis>, proc: &Path, target: &str, id: &str) -> Va
                     _ => unknown("Codex state is unknown"),
                 })
             }
+            // Grok's leader keeps driving a session after a client disconnects, so
+            // an interrupted turn does not hold a handover the way Codex's does.
+            Some(true) if parts[0] == "grok" => Ok(
+                json!({"status":"waiting", "reason":"No marker yet; the original Grok process is alive and its leader drives the session independently of any client"}),
+            ),
             Some(true) => Ok(
                 json!({"status":"waiting", "reason":"No marker yet; the original Claude process is alive. Inbound policy may still hold or refuse the message."}),
             ),

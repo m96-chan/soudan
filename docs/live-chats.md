@@ -8,8 +8,9 @@ The transport depends on the agent, because a terminal is a poor substitute for 
 | --- | --- | --- |
 | Codex CLI | Codex's own session queue | none |
 | Claude Code | Native peer inbox socket (Linux) | messaging enabled in the target |
+| Grok Build | ACP through its shared leader process | `use_leader = true` before the chat is opened |
 
-A target's id names its transport, because each agent has exactly one: Codex ids begin `codex:`, Claude Code ids begin `claude:`. There is no fallback between them. A session whose own API cannot be reached is reported as an error rather than reached some other way, because the alternative was typing into its terminal, and keystrokes cannot tell an empty composer from one holding somebody's unsent draft.
+A target's id names its transport, because each agent has exactly one: Codex ids begin `codex:`, Claude Code ids begin `claude:`, Grok Build ids begin `grok:`. There is no fallback between them. A session whose own API cannot be reached is reported as an error rather than reached some other way, because the alternative was typing into its terminal, and keystrokes cannot tell an empty composer from one holding somebody's unsent draft.
 
 **Cursor is not supported here.** It was reached by typing into its terminal through a Kitty bridge, which needed a keypress to arm, could not protect a draft, and existed for that one agent. That transport has been removed. Cursor returns when it exposes a session API of its own; its headless plugin integration is unaffected and still works with `soudan consult`.
 
@@ -175,3 +176,45 @@ its held queue or receive its policy callbacks. `live wait` times out in that
 case; it does not release the message. `notify_idle` and direct inbox callbacks
 are investigated in [claude-inbox-proposal.md](claude-inbox-proposal.md) and are
 not implemented.
+
+## Grok Build sessions: ACP through the leader
+
+Grok speaks [ACP](https://agentclientprotocol.com), but a running chat is only
+reachable when it was started against a shared leader process. Set it once:
+
+```toml
+# ~/.grok/config.toml
+[cli]
+use_leader = true
+```
+
+This takes effect for chats opened afterwards; a Grok already running without a
+leader is discovered but cannot be delivered to, and says so. The leader listens
+on `~/.grok/leader.sock` and wraps ACP in its own envelope: length-prefixed
+frames, a registration handshake, then JSON-RPC carried as a string.
+
+```sh
+soudan live list
+soudan live send grok:12345:987654 --request-id design-question-1 'Please review this.'
+soudan live read grok:12345:987654
+soudan live delivery design-question-1
+```
+
+Delivery hands the prompt over and closes the connection without waiting for the
+turn. The leader keeps driving the session after a client disconnects, which was
+verified by writing a prompt, closing immediately, and observing the turn run to
+`turn_ended completed`. A turn can take minutes, so `submitted` means handed
+over, never answered.
+
+Receipt evidence is `chat_history.jsonl` in the session's directory. That file
+exists from the moment a chat is created, while `updates.jsonl` only appears once
+something streams, so anchoring on the former keeps the very first message
+provable. Replies are read back from `updates.jsonl`, where one answer arrives as
+a run of `agent_message_chunk` records that are reassembled in order.
+
+**Compatibility:** the leader envelope and its registration frame are internal to
+Grok, not a published contract, so this adapter is experimental. It checks
+`leader_protocol_version` and refuses anything other than 1, and it requires the
+agent to advertise `sessionCapabilities.resume`. It was inspected against Grok
+Build 1.0.25. There is no fallback transport: a protocol change makes Grok
+delivery unavailable until the adapter is updated.

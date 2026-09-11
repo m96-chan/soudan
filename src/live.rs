@@ -67,6 +67,8 @@ fn inspect(proc: &Path, workspace: &Path, pid: u32) -> Result<Option<LiveTarget>
         "claude-code"
     } else if exe.ends_with("/codex") {
         "codex"
+    } else if exe.contains("/.grok/") || exe.ends_with("/grok") {
+        "grok"
     } else {
         return Ok(None);
     };
@@ -82,7 +84,11 @@ fn inspect(proc: &Path, workspace: &Path, pid: u32) -> Result<Option<LiveTarget>
         .context("Missing start time")?
         .parse()?;
     // The id names the transport, because each agent has exactly one.
-    let transport = if agent == "codex" { "codex" } else { "claude" };
+    let transport = match agent {
+        "codex" => "codex",
+        "grok" => "grok",
+        _ => "claude",
+    };
     Ok(Some(LiveTarget {
         id: format!("{transport}:{pid}:{start_time}"),
         agent: agent.into(),
@@ -207,6 +213,13 @@ fn native(_: &Path, _: &str) -> Result<Option<(LiveTarget, crate::codex::Session
 }
 
 pub async fn read(workspace: &Path, target: &str) -> Result<Value> {
+    if target.starts_with("grok:") {
+        let t = resolve(workspace, target)?;
+        let session = grok_session(workspace, &t)?;
+        let mut state = crate::grok::state(&session)?;
+        state["target"] = serde_json::to_value(t)?;
+        return Ok(state);
+    }
     if target.starts_with("claude:") {
         let t = resolve(workspace, target)?;
         let session = crate::claude::for_target(workspace, &t)?;
@@ -258,6 +271,11 @@ async fn send_inner(workspace: &Path, target: &str, text: &str, request_id: &str
         return Ok(
             json!({"request_id":request_id,"target":target,"status":status,"replayed":true}),
         );
+    }
+    if target.starts_with("grok:") {
+        let t = resolve(workspace, target)?;
+        let session = grok_session(workspace, &t)?;
+        return send_to_grok(workspace, &t, &session, text, request_id).await;
     }
     if target.starts_with("claude:") {
         let t = resolve(workspace, target)?;
@@ -396,6 +414,77 @@ async fn queue_to_codex(
         }
         Err(failure) => {
             // A command that never ran delivered nothing, so the id stays retryable.
+            let status = match failure {
+                crate::codex::Failure::NotAttempted(_) => "not_delivered",
+                crate::codex::Failure::Uncertain(_) => "uncertain",
+            };
+            let error = failure.into_error();
+            db.execute(
+                "UPDATE live_deliveries SET status=?2,error=?3 WHERE request_id=?1",
+                params![request_id, status, error.to_string()],
+            )?;
+            Err(error)
+        }
+    }
+}
+
+/// Resolve a validated target to its Grok session, using that process's own home.
+#[cfg(target_os = "linux")]
+fn grok_session(workspace: &Path, target: &LiveTarget) -> Result<crate::grok::Session> {
+    validate_target(Path::new("/proc"), workspace, target)?;
+    let env = std::fs::read(format!("/proc/{}/environ", target.pid))?;
+    let home = {
+        use std::os::unix::ffi::OsStrExt;
+        env.split(|b| *b == 0)
+            .find_map(|e| e.strip_prefix(b"HOME=".as_slice()))
+            .filter(|v| !v.is_empty())
+            .map(|v| PathBuf::from(std::ffi::OsStr::from_bytes(v)).join(".grok"))
+            .context("Cannot locate the target's Grok home")?
+    };
+    crate::grok::session(&home, workspace, target.pid)?
+        .context("Grok session is not in its registry; rediscover the target")
+}
+#[cfg(not(target_os = "linux"))]
+fn grok_session(_: &Path, _: &LiveTarget) -> Result<crate::grok::Session> {
+    anyhow::bail!("Grok discovery currently requires Linux")
+}
+
+/// Deliver through Grok's leader, recording intent exactly as the others do.
+async fn send_to_grok(
+    workspace: &Path,
+    target: &LiveTarget,
+    session: &crate::grok::Session,
+    text: &str,
+    request_id: &str,
+) -> Result<Value> {
+    use rusqlite::params;
+    let db = rusqlite::Connection::open(workspace.join(".soudan/state.db"))?;
+    db.busy_timeout(Duration::from_secs(5))?;
+    delivery_schema(&db)?;
+    let basis = crate::receipt::Basis::capture(&session.evidence())
+        .ok()
+        .and_then(|b| serde_json::to_string(&b).ok());
+    let before = crate::grok::state(session)?.to_string();
+    if let Claim::Recorded(status) =
+        claim(&db, request_id, &target.id, text, &before, basis.as_deref())?
+    {
+        return Ok(
+            json!({"request_id":request_id,"target":target.id,"status":status,"replayed":true}),
+        );
+    }
+    match crate::grok::send(session, text, request_id).await {
+        Ok(()) => {
+            db.execute(
+                "UPDATE live_deliveries SET status='submitted' WHERE request_id=?1",
+                [request_id],
+            )?;
+            Ok(
+                json!({"request_id":request_id,"target":target.id,"session":session.id,
+                "status":"submitted","transport":"grok_leader",
+                "next":"Handed to Grok's leader, which drives the turn after this connection closes. This is not an acknowledgement; read the target or its receipt."}),
+            )
+        }
+        Err(failure) => {
             let status = match failure {
                 crate::codex::Failure::NotAttempted(_) => "not_delivered",
                 crate::codex::Failure::Uncertain(_) => "uncertain",
