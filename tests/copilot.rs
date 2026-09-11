@@ -204,9 +204,6 @@ mod rpc {
         let proc = workspace.join("proc");
         process(&proc, &workspace, server.port);
         let target = format!("copilot:42:123:{}:{ID}", server.port);
-        let discovered = soudan::live::discover_in(&proc, &workspace).unwrap();
-        assert_eq!(discovered.len(), 1);
-        assert_eq!(discovered[0].id, target);
         let sent = soudan::live::send_copilot_in(
             &workspace,
             &target,
@@ -218,6 +215,10 @@ mod rpc {
         .await
         .unwrap();
         assert_eq!(sent["status"], "queued");
+        let discovered = soudan::live::discover_in(&proc, &workspace).unwrap();
+        assert_eq!(discovered.len(), 1);
+        assert_eq!(discovered[0].id, target);
+
         let before = fs::read(workspace.join(".soudan/state.db")).unwrap();
         assert_eq!(
             soudan::live::delivery_readonly_in(&workspace, "test", &proc).unwrap()["receipt"]["status"],
@@ -299,7 +300,7 @@ mod rpc {
                 .is_err()
         );
         let row = soudan::live::delivery_in(dir.path(), "lost", &proc).unwrap();
-        assert_eq!(row["status"], "uncertain");
+        assert_eq!(row["status"], "uncertain", "delivery: {row}");
         assert_eq!(row["receipt"]["status"], "unknown");
         assert_eq!(
             soudan::live::send_copilot_in(dir.path(), &target, "hello", "lost", None, &proc)
