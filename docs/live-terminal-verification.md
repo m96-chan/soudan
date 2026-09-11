@@ -26,7 +26,7 @@ The attachment has since been completed and the bridge run against the user's re
 - **Cursor** is still broken. Its composer line begins with `→`, which is not a recognized prompt, so the reverse scan latches onto a shell prompt left in the scrollback and reports a draft. Sending to Cursor fails.
 - **Claude Code** behaved as designed; the busy guard correctly refused a session mid-turn.
 
-`soudan live setup` hardcodes `ctrl+shift+f12`, which cannot be pressed on every keyboard. There is no option to choose the key, so the generated mapping has to be edited by hand.
+`soudan live setup` defaulted to `ctrl+shift+f12`, which cannot be pressed on every keyboard. Resolved: `--shortcut <key>` chooses the mapping, the chosen key is recorded so a later setup does not reset it, and a key already mapped by another workspace is refused instead of shadowed.
 
 ## Codex no longer uses this transport
 

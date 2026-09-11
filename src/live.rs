@@ -138,10 +138,69 @@ pub fn discover(workspace: &Path) -> Result<Vec<LiveTarget>> {
     }
 }
 fn resolve(workspace: &Path, id: &str) -> Result<LiveTarget> {
-    discover(workspace)?
+    #[cfg(target_os = "linux")]
+    {
+        resolve_in(Path::new("/proc"), workspace, id)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        discover(workspace)?
+            .into_iter()
+            .find(|t| t.id == id)
+            .context("Live target not found in this workspace")
+    }
+}
+
+/// Resolve an id, explaining a near miss rather than only reporting absence.
+///
+/// Discovery compares working directories exactly, so a session opened in a
+/// subdirectory of the project belongs to a different workspace and vanishes
+/// from the list without a word. Naming the directory it actually runs in is
+/// the difference between a one-line fix and a hunt.
+pub fn resolve_in(proc: &Path, workspace: &Path, id: &str) -> Result<LiveTarget> {
+    if let Some(t) = discover_in(proc, workspace)?
         .into_iter()
         .find(|t| t.id == id)
-        .context("Live target not found in this workspace")
+    {
+        return Ok(t);
+    }
+    anyhow::bail!("{}", miss(proc, workspace, id))
+}
+
+/// Describe why an id did not resolve, using only what the process still shows.
+fn miss(proc: &Path, workspace: &Path, id: &str) -> String {
+    const GENERIC: &str = "Live target not found in this workspace";
+    let mut parts = id.split(':');
+    let (Some(_), Some(pid), Some(start)) = (parts.next(), parts.next(), parts.next()) else {
+        return format!("{GENERIC}; ids look like <transport>:<pid>:<start_time>");
+    };
+    let Ok(pid) = pid.parse::<u32>() else {
+        return GENERIC.into();
+    };
+    let cwd = match std::fs::read_link(proc.join(pid.to_string()).join("cwd")) {
+        Ok(cwd) => cwd,
+        Err(_) => {
+            return format!("{GENERIC}; process {pid} is gone, so rediscover the target");
+        }
+    };
+    if cwd != workspace {
+        return format!(
+            "{GENERIC}; process {pid} runs in {} and discovery matches the working directory exactly. Run Soudan with --workspace {} to reach it, or reopen that chat in {}.",
+            cwd.display(),
+            cwd.display(),
+            workspace.display()
+        );
+    }
+    match crate::claude::process_start(proc, pid) {
+        Ok(actual) if start.parse::<u64>().is_ok_and(|s| s != actual) => {
+            format!(
+                "{GENERIC}; process {pid} was replaced since this id was issued, so rediscover the target"
+            )
+        }
+        _ => format!(
+            "{GENERIC}; process {pid} is in this workspace but is not a supported agent terminal"
+        ),
+    }
 }
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
@@ -639,7 +698,7 @@ async fn handle(workspace: &Path, db: &rusqlite::Connection, req: Request) -> Re
 /// Install a Kitty shortcut that grants a dedicated bridge connection.
 /// Kitty's global remote-control flag cannot be enabled by config reload.
 #[cfg(target_os = "linux")]
-pub async fn setup(workspace: &Path, via_pid: u32) -> Result<Value> {
+pub async fn setup(workspace: &Path, via_pid: u32, shortcut: Option<&str>) -> Result<Value> {
     if let Ok(value) = request(workspace, &Request::Ping).await {
         return Ok(value);
     }
@@ -652,13 +711,24 @@ pub async fn setup(workspace: &Path, via_pid: u32) -> Result<Value> {
             .into()
     }))
     .join("kitty/kitty.conf");
-    configure_shortcut(&config, workspace, &std::env::current_exe()?, kitty_pid)?;
+    // An explicit key wins, then the one this workspace already uses, then the default.
+    let shortcut = shortcut
+        .map(str::to_owned)
+        .or_else(|| recorded_shortcut(workspace))
+        .unwrap_or_else(|| DEFAULT_SHORTCUT.to_owned());
+    configure_shortcut(
+        &config,
+        workspace,
+        &std::env::current_exe()?,
+        kitty_pid,
+        &shortcut,
+    )?;
     // SAFETY: signal only the positively identified owning Kitty process.
     unsafe {
         libc::kill(kitty_pid as i32, libc::SIGUSR1);
     }
     Ok(
-        json!({"status":"awaiting_shortcut","shortcut":"ctrl+shift+f12","instructions":"Press Ctrl+Shift+F12 once in the existing Kitty window. This starts a restricted Soudan bridge without restarting any chat."}),
+        json!({"status":"awaiting_shortcut","shortcut":shortcut,"instructions":format!("Press {shortcut} once in the existing Kitty window. This starts a restricted Soudan bridge without restarting any chat.")}),
     )
 }
 #[cfg(target_os = "linux")]
@@ -768,7 +838,7 @@ fn validate_terminal(_: &Path, _: &LiveTarget) -> Result<()> {
     anyhow::bail!("Live terminal discovery currently requires Linux")
 }
 #[cfg(not(target_os = "linux"))]
-pub async fn setup(_: &Path, _: u32) -> Result<Value> {
+pub async fn setup(_: &Path, _: u32, _: Option<&str>) -> Result<Value> {
     anyhow::bail!("Live Kitty setup currently requires Linux")
 }
 
@@ -875,12 +945,63 @@ pub async fn disconnect(workspace: &Path) -> Result<Value> {
 }
 
 #[cfg(target_os = "linux")]
+/// The shortcut Kitty maps when the caller expresses no preference.
+pub const DEFAULT_SHORTCUT: &str = "ctrl+shift+f12";
+
+/// Reject anything that could carry a second directive into kitty.conf.
+///
+/// The key is written verbatim into a `map <key> launch ...` line, so a value
+/// holding whitespace or a newline would append configuration of its own.
+pub fn validate_shortcut(key: &str) -> Result<()> {
+    ensure!(
+        !key.is_empty()
+            && key.len() <= 64
+            && key
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"+_-".contains(&b))
+            && !key.starts_with('+')
+            && !key.ends_with('+'),
+        "Kitty shortcut must be lowercase key names joined by '+', such as ctrl+shift+backslash"
+    );
+    Ok(())
+}
+
+/// The shortcut this workspace already installed, if it has one.
+///
+/// Re-running setup must not silently move a workspace back to the default: a
+/// hand-picked key is the whole reason the option exists, and the recorded
+/// `addition` is what `disconnect` matches to remove the block cleanly.
+pub fn recorded_shortcut(workspace: &Path) -> Option<String> {
+    let record = std::fs::read(workspace.join(".soudan/kitty-shortcut.json")).ok()?;
+    let value: Value = serde_json::from_slice(&record).ok()?;
+    if let Some(shortcut) = value["shortcut"].as_str() {
+        return Some(shortcut.to_owned());
+    }
+    // Records written before the key was stored — including the hand-edited ones
+    // this option exists to replace — carry only the block. Reading the key back
+    // out of it carries a chosen shortcut through the upgrade, instead of quietly
+    // resetting the one installation that already needed a different key.
+    value["addition"]
+        .as_str()?
+        .lines()
+        .find_map(|line| {
+            let mut words = line.split_whitespace();
+            (words.next() == Some("map"))
+                .then(|| words.next())
+                .flatten()
+        })
+        .filter(|key| validate_shortcut(key).is_ok())
+        .map(str::to_owned)
+}
+
 pub fn configure_shortcut(
     config: &Path,
     workspace: &Path,
     executable: &Path,
     kitty_pid: u32,
+    shortcut: &str,
 ) -> Result<()> {
+    validate_shortcut(shortcut)?;
     let mut original =
         std::fs::read_to_string(config).context("Cannot read Kitty configuration")?;
     let record = workspace.join(".soudan/kitty-shortcut.json");
@@ -899,12 +1020,13 @@ pub fn configure_shortcut(
         );
         original = original.replacen(previous, "", 1);
     }
+    // One kitty.conf serves every workspace, so the key is the contended resource.
     ensure!(
         !original.lines().any(|line| {
             let mut words = line.split_whitespace();
-            words.next() == Some("map") && words.next() == Some("ctrl+shift+f12")
+            words.next() == Some("map") && words.next() == Some(shortcut)
         }),
-        "ctrl+shift+f12 is already mapped in Kitty; choose another shortcut manually"
+        "{shortcut} is already mapped in Kitty, possibly by another workspace's bridge; pass --shortcut with a free key"
     );
     let command = format!(
         "launch --type=background --allow-remote-control --remote-control-password='!' --remote-control-password='\"\" get-text send-text send-key' --cwd {} {} --workspace {} live bridge",
@@ -913,13 +1035,15 @@ pub fn configure_shortcut(
         quote(&workspace.to_string_lossy())
     );
     let addition = format!(
-        "\n# Soudan bridge: {}\nmap ctrl+shift+f12 {command}\n",
+        "\n# Soudan bridge: {}\nmap {shortcut} {command}\n",
         workspace.display()
     );
     std::fs::write(config, format!("{original}{addition}"))?;
     std::fs::write(
         record,
-        serde_json::to_vec(&json!({"config":config,"addition":addition,"kitty_pid":kitty_pid}))?,
+        serde_json::to_vec(
+            &json!({"config":config,"addition":addition,"kitty_pid":kitty_pid,"shortcut":shortcut}),
+        )?,
     )?;
     Ok(())
 }

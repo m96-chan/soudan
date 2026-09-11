@@ -95,6 +95,11 @@ enum LiveCommands {
     Setup {
         #[arg(long)]
         via_pid: u32,
+        /// Kitty key to map, e.g. ctrl+shift+backslash. One kitty.conf serves
+        /// every workspace, so a second project needs a free key. Omitted, this
+        /// keeps the key this workspace already installed.
+        #[arg(long)]
+        shortcut: Option<String>,
     },
     Read {
         target: String,
@@ -185,7 +190,9 @@ async fn main() -> Result<()> {
             }
             LiveCommands::Disconnect => soudan::live::disconnect(&app.workspace).await?,
             LiveCommands::List => serde_json::to_value(soudan::live::discover(&app.workspace)?)?,
-            LiveCommands::Setup { via_pid } => soudan::live::setup(&app.workspace, via_pid).await?,
+            LiveCommands::Setup { via_pid, shortcut } => {
+                soudan::live::setup(&app.workspace, via_pid, shortcut.as_deref()).await?
+            }
             LiveCommands::Read { target } => soudan::live::read(&app.workspace, &target).await?,
             LiveCommands::Send {
                 target,

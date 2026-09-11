@@ -95,13 +95,28 @@ fn multiline_draft_is_not_mistaken_for_empty_input() {
 
 #[tokio::test]
 async fn shortcut_setup_updates_binary_and_disconnect_restores_config() {
+    use soudan::live::{DEFAULT_SHORTCUT, configure_shortcut};
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir(dir.path().join(".soudan")).unwrap();
     let config = dir.path().join("kitty.conf");
     let original = "font_size 12\n# keep this comment\n";
     std::fs::write(&config, original).unwrap();
-    soudan::live::configure_shortcut(&config, dir.path(), Path::new("/old/soudan"), 0).unwrap();
-    soudan::live::configure_shortcut(&config, dir.path(), Path::new("/new/soudan"), 0).unwrap();
+    configure_shortcut(
+        &config,
+        dir.path(),
+        Path::new("/old/soudan"),
+        0,
+        DEFAULT_SHORTCUT,
+    )
+    .unwrap();
+    configure_shortcut(
+        &config,
+        dir.path(),
+        Path::new("/new/soudan"),
+        0,
+        DEFAULT_SHORTCUT,
+    )
+    .unwrap();
     let updated = std::fs::read_to_string(&config).unwrap();
     assert_eq!(updated.matches("map ctrl+shift+f12").count(), 1);
     assert!(updated.contains("/new/soudan"));
@@ -109,6 +124,114 @@ async fn shortcut_setup_updates_binary_and_disconnect_restores_config() {
     assert!(!updated.contains("allow_remote_control yes"));
     soudan::live::disconnect(dir.path()).await.unwrap();
     assert_eq!(std::fs::read_to_string(config).unwrap(), original);
+}
+
+#[test]
+fn a_second_workspace_needs_its_own_key_and_the_first_keeps_the_one_it_chose() {
+    use soudan::live::{configure_shortcut, recorded_shortcut, validate_shortcut};
+    let dir = tempfile::tempdir().unwrap();
+    let one = dir.path().join("one");
+    let two = dir.path().join("two");
+    for w in [&one, &two] {
+        std::fs::create_dir_all(w.join(".soudan")).unwrap();
+    }
+    let config = dir.path().join("kitty.conf");
+    std::fs::write(&config, "font_size 12\n").unwrap();
+
+    configure_shortcut(
+        &config,
+        &one,
+        Path::new("/soudan"),
+        0,
+        "ctrl+shift+backslash",
+    )
+    .unwrap();
+    // One kitty.conf serves both, so reusing the key has to be refused, not silently
+    // shadowed: the second mapping would never fire.
+    let clash = configure_shortcut(
+        &config,
+        &two,
+        Path::new("/soudan"),
+        0,
+        "ctrl+shift+backslash",
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(clash.contains("already mapped"), "{clash}");
+    configure_shortcut(&config, &two, Path::new("/soudan"), 0, "ctrl+shift+f9").unwrap();
+
+    let updated = std::fs::read_to_string(&config).unwrap();
+    assert_eq!(updated.matches("map ctrl+shift+backslash").count(), 1);
+    assert_eq!(updated.matches("map ctrl+shift+f9").count(), 1);
+
+    // Re-running setup must not move a workspace back to the default; the chosen
+    // key is recorded precisely so a hand-picked one survives.
+    assert_eq!(
+        recorded_shortcut(&one).as_deref(),
+        Some("ctrl+shift+backslash")
+    );
+    assert_eq!(recorded_shortcut(&two).as_deref(), Some("ctrl+shift+f9"));
+    assert!(recorded_shortcut(dir.path()).is_none());
+
+    // A record predating the stored key, such as one edited by hand to escape the
+    // default, still has to survive an upgrade rather than snap back to it.
+    let legacy = dir.path().join("legacy");
+    std::fs::create_dir_all(legacy.join(".soudan")).unwrap();
+    std::fs::write(
+        legacy.join(".soudan/kitty-shortcut.json"),
+        r#"{"config":"/k.conf","kitty_pid":1,"addition":"\n# Soudan bridge: /w\nmap ctrl+shift+backslash launch --type=background\n"}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        recorded_shortcut(&legacy).as_deref(),
+        Some("ctrl+shift+backslash")
+    );
+
+    // The key is written straight into kitty.conf, so it must not carry a second
+    // directive of its own.
+    for bad in [
+        "ctrl+shift+a\nmap ctrl+q quit",
+        "ctrl shift a",
+        "",
+        "Ctrl+Shift+A",
+        "a+",
+    ] {
+        assert!(validate_shortcut(bad).is_err(), "accepted {bad:?}");
+    }
+    assert!(validate_shortcut("ctrl+shift+backslash").is_ok());
+}
+
+#[test]
+fn an_unresolvable_target_says_which_directory_the_process_actually_runs_in() {
+    use soudan::live::resolve_in;
+    let dir = tempfile::tempdir().unwrap();
+    let proc = dir.path().join("proc");
+    let elsewhere = dir.path().join("other-project");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    std::fs::create_dir(&proc).unwrap();
+    fixture(&proc, 42, "/opt/claude/versions/2.1", &elsewhere, "52");
+
+    // Discovery compares the working directory exactly, so a chat opened one
+    // directory away disappears. The error has to name that directory.
+    let error = resolve_in(&proc, dir.path(), "claude:42:12345")
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains(&elsewhere.display().to_string()), "{error}");
+    assert!(error.contains("--workspace"), "{error}");
+
+    // A process that no longer exists is a different problem and says so.
+    let gone = resolve_in(&proc, dir.path(), "claude:9999:12345")
+        .unwrap_err()
+        .to_string();
+    assert!(gone.contains("is gone"), "{gone}");
+
+    // A live process whose start time moved on was replaced, not relocated.
+    fixture(&proc, 43, "/opt/claude/versions/2.1", dir.path(), "53");
+    let replaced = resolve_in(&proc, dir.path(), "claude:43:99999")
+        .unwrap_err()
+        .to_string();
+    assert!(replaced.contains("was replaced"), "{replaced}");
+    assert!(resolve_in(&proc, dir.path(), "claude:43:12345").is_ok());
 }
 
 #[test]

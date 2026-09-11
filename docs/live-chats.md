@@ -87,6 +87,10 @@ soudan live setup --via-pid 12345
 
 The command adds a project-specific **Ctrl+Shift+F12** shortcut to Kitty's configuration and reloads its key mappings. Press that shortcut once in the existing Kitty instance. It launches a background bridge with permission to read screens, paste text, and send the Enter key. Your open chats remain running.
 
+Pass `--shortcut` to map a different key, for example `--shortcut ctrl+shift+backslash` on a keyboard without an F12. One `kitty.conf` serves every project, so the key is a machine-wide resource: a second workspace that asks for a key already mapped is refused rather than adding a mapping that would never fire. Re-running setup without `--shortcut` keeps the key this workspace already installed, so a hand-picked one is not reset to the default.
+
+Only Cursor targets need this bridge. Claude Code and Codex are delivered to natively, so a project that uses neither Cursor nor the terminal transport needs no shortcut at all.
+
 This key press is needed when Kitty was started without remote control. Its global remote-control mode cannot be enabled by reloading configuration. Soudan does not change the global mode or restart Kitty. The shortcut grants a dedicated connection only to the bridge. If the key is already mapped, setup refuses to overwrite it; configure a different shortcut manually.
 
 Setup expects Kitty's standard configuration path (`$XDG_CONFIG_HOME/kitty/kitty.conf`, or `~/.config/kitty/kitty.conf`). For a Kitty instance launched with a custom config path, place the generated mapping in that config and reload it yourself. Only one Kitty instance is connected per workspace in this version.

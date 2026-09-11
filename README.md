@@ -84,6 +84,7 @@ Only Cursor Agent uses the Kitty terminal transport, which needs a one-time atta
 ```sh
 soudan live setup --via-pid <PID_FROM_LIST>
 # Press Ctrl+Shift+F12 once in the existing Kitty window.
+# Use --shortcut ctrl+shift+backslash to map a different key; one kitty.conf serves every project.
 ```
 
 MCP clients can use `soudan_live_targets`, `soudan_live_read`, `soudan_live_send`, and `soudan_live_delivery` for the same workflow. See [live chat setup and verification](docs/live-chats.md). The destination is always the existing session; neither `queued` nor `submitted` is an answer, so read the target to see its reply.
