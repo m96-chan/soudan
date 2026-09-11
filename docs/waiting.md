@@ -23,6 +23,46 @@ Multiple watchers can see the same messages; none consumes them. Reusing the
 same cursor returns the same page. Room IDs assume the workspace database has
 not been replaced or reset; do not reuse an old cursor after resetting state.
 
+## Wait for a specific reply
+
+When several requests share a room, use structural correlation:
+
+```sh
+soudan wait --reply-to design-question-1 --room codex-chat --timeout 300
+# Responder:
+soudan post --room codex-chat --sender codex \
+  --in-reply-to design-question-1 'Here is the result.'
+```
+
+MCP responders pass `in_reply_to` to `soudan_post`. Copy the ID from the incoming
+`[Soudan <id>]` prefix. This field identifies the request being answered;
+`request_id` on an MCP post instead identifies that post for retry deduplication.
+Reusing a post request ID with a different reply correlation is rejected.
+
+`--room` is optional with `--reply-to`: omission searches all rooms in the selected
+workspace's `.soudan/state.db`, never other workspace databases. By default the
+first matching row is returned, even if posted before the wait started. The
+result has `outcome: "event"`, `kind: "reply"`, `request_id`, `messages` (one row),
+and `last_id`. To read subsequent matching replies, repeat with
+`--after <last_id>`; use `history --room <room> --after <last_id>` for subsequent
+room messages. No cursor means the same first reply will be returned again.
+Unrelated messages and quoted IDs in message bodies do not match. Correlation
+records the sender's declared reply relationship, not the correctness of its answer.
+
+Reply waits share the existing 300-second default, 3600-second maximum, JSON
+outcomes and exit codes. They do not consult delivery receipts: **even if a delivery
+is lost, the reply wait continues until a correlated post arrives or timeout**.
+An agent can still post a reply obtained through another route. No post triggers
+automatic live delivery or resend. Host-managed background completion is still
+required to wake an idle agent.
+
+Normal store opening atomically adds nullable `messages.in_reply_to` and its
+index, preserving existing rows as NULL. Read-only waits never migrate: a missing
+column supplies no correlated replies, and waiting continues until migration and
+a matching post or timeout. Room waits include `in_reply_to: null` for legacy rows.
+Restart MCP servers after installing the updated binary so their post schemas
+and handlers accept the new field.
+
 For receipt observation instead of an answer:
 
 ```sh
@@ -100,3 +140,11 @@ A same-workspace smoke check started `soudan wait --room codex-chat --after 33
 --timeout 30` before room post #34 (`WAIT-ROOM-9044`). It exited 0 with
 `outcome=event`, `last_id=34` and the matching message. This verifies the CLI's
 room event path; it does not independently verify Claude's host wake-up behavior.
+
+The reply-correlation extension adds tests for exact correlation (including a
+quoted-ID non-match), a post in the history-to-wait gap, first-reply selection and
+continuation, room filtering, workspace isolation, unrelated WAL commits,
+read-only legacy waits, concurrent schema migration, legacy retry identity, and
+MCP schema/history/retry validation. Validation on the completed tree: 66 tests
+passed, `cargo fmt --check` passed, and `cargo clippy --all-targets` passed without
+warnings. The example skill also passed its frontmatter validator.

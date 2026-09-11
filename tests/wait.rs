@@ -240,3 +240,203 @@ fn supervisor_times_out_even_when_receipt_log_open_blocks() {
     assert_eq!(value(&out)["outcome"], "timeout");
     assert!(start.elapsed() < Duration::from_secs(4));
 }
+
+#[test]
+fn reply_wait_correlates_structurally_catches_gap_and_returns_first_reply() {
+    let tmp = tempfile::tempdir().unwrap();
+    let other = tempfile::tempdir().unwrap();
+    let post = |workspace: &Path, room: &str, reply: &str, text: &str| {
+        let out = run(
+            workspace,
+            &[
+                "post",
+                "--room",
+                room,
+                "--sender",
+                "agent",
+                "--in-reply-to",
+                reply,
+                text,
+            ],
+        );
+        assert!(out.status.success(), "{out:?}");
+        value(&out)["id"].as_i64().unwrap()
+    };
+    post(tmp.path(), "r", "unrelated", "[Soudan wanted]");
+    let history = run(tmp.path(), &["history", "--room", "r"]);
+    assert_eq!(value(&history).as_array().unwrap().len(), 1);
+    // Both replies arrive in the gap between history and starting the waiter.
+    let first = post(tmp.path(), "elsewhere", "wanted", "first");
+    let second = post(tmp.path(), "r", "wanted", "second");
+    for _ in 0..2 {
+        let out = run(
+            tmp.path(),
+            &["wait", "--reply-to", "wanted", "--timeout", "1"],
+        );
+        assert_eq!(out.status.code(), Some(0), "{out:?}");
+        assert_eq!(value(&out)["last_id"], first);
+        assert_eq!(value(&out)["messages"].as_array().unwrap().len(), 1);
+        assert_eq!(value(&out)["messages"][0]["in_reply_to"], "wanted");
+    }
+    let out = run(
+        tmp.path(),
+        &[
+            "wait",
+            "--reply-to",
+            "wanted",
+            "--room",
+            "r",
+            "--timeout",
+            "1",
+        ],
+    );
+    assert_eq!(value(&out)["last_id"], second);
+    let out = run(
+        tmp.path(),
+        &[
+            "wait",
+            "--reply-to",
+            "wanted",
+            "--after",
+            &first.to_string(),
+            "--timeout",
+            "1",
+        ],
+    );
+    assert_eq!(value(&out)["last_id"], second);
+    let out = run(
+        other.path(),
+        &["wait", "--reply-to", "wanted", "--timeout", "1"],
+    );
+    assert_eq!(out.status.code(), Some(124));
+    assert!(!other.path().join(".soudan").exists());
+    let out = run(
+        tmp.path(),
+        &["wait", "--reply-to", "absent", "--timeout", "1"],
+    );
+    assert_eq!(out.status.code(), Some(124));
+}
+
+#[test]
+fn legacy_reply_wait_is_readonly_and_post_migrates_preserving_history() {
+    let tmp = tempfile::tempdir().unwrap();
+    fs::create_dir(tmp.path().join(".soudan")).unwrap();
+    let path = tmp.path().join(".soudan/state.db");
+    let db = rusqlite::Connection::open(&path).unwrap();
+    db.execute_batch("CREATE TABLE messages(id INTEGER PRIMARY KEY,room TEXT,sender TEXT,text TEXT); INSERT INTO messages VALUES(1,'r','old','[Soudan wanted]');").unwrap();
+    drop(db);
+    let before = fs::read(&path).unwrap();
+    let out = run(
+        tmp.path(),
+        &["wait", "--reply-to", "wanted", "--timeout", "1"],
+    );
+    assert_eq!(out.status.code(), Some(124), "{out:?}");
+    assert_eq!(before, fs::read(&path).unwrap());
+    let out = run(
+        tmp.path(),
+        &[
+            "post",
+            "--room",
+            "r",
+            "--sender",
+            "new",
+            "--in-reply-to",
+            "wanted",
+            "answer",
+        ],
+    );
+    assert!(out.status.success(), "{out:?}");
+    let history = value(&run(tmp.path(), &["history", "--room", "r"]));
+    assert!(history[0]["in_reply_to"].is_null());
+    assert_eq!(history[1]["in_reply_to"], "wanted");
+    let out = run(
+        tmp.path(),
+        &[
+            "post",
+            "--room",
+            "r",
+            "--sender",
+            "new",
+            "--in-reply-to",
+            "bad id",
+            "answer",
+        ],
+    );
+    assert!(!out.status.success());
+    let out = run(
+        tmp.path(),
+        &["wait", "--reply-to", "bad id", "--timeout", "1"],
+    );
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(value(&out)["outcome"], "error");
+}
+
+#[tokio::test]
+async fn reply_wait_ignores_unrelated_commits_and_observes_the_matching_commit() {
+    let tmp = tempfile::tempdir().unwrap();
+    fs::create_dir(tmp.path().join(".soudan")).unwrap();
+    let store = soudan::Store::open(&tmp.path().join(".soudan/state.db")).unwrap();
+    let watch = soudan::wait::Watch::Reply {
+        request_id: "wanted".into(),
+        room: Some("r".into()),
+        after: 0,
+    };
+    let writer = async {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        store
+            .post_reply("r", "agent", "[Soudan wanted]", None, Some("unrelated"))
+            .unwrap();
+        // An entire poll must pass without mistaking this for the requested reply.
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+        store
+            .post_reply("r", "agent", "answer", None, Some("wanted"))
+            .unwrap()
+    };
+    let (event, id) = tokio::join!(soudan::wait::observe(tmp.path(), &watch, 4), writer);
+    assert_eq!(event.unwrap()["last_id"], id);
+}
+
+#[test]
+fn concurrent_schema_migration_keeps_legacy_post_retry_identity() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("state.db");
+    let db = rusqlite::Connection::open(&path).unwrap();
+    db.execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE messages(id INTEGER PRIMARY KEY,room TEXT,sender TEXT,text TEXT); CREATE TABLE requests(scope TEXT,key TEXT,fingerprint TEXT,result TEXT,PRIMARY KEY(scope,key)); INSERT INTO messages VALUES(1,'r','agent','answer');").unwrap();
+    db.execute(
+        "INSERT INTO requests VALUES(?1,'old','answer','1')",
+        [serde_json::to_string(&("post", "r", "agent")).unwrap()],
+    )
+    .unwrap();
+    drop(db);
+    std::thread::scope(|scope| {
+        let mut handles = vec![];
+        for _ in 0..4 {
+            let path = &path;
+            handles.push(scope.spawn(move || {
+                let store = soudan::Store::open(path).unwrap();
+                assert_eq!(
+                    store
+                        .post_once("r", "agent", "answer", Some("old"))
+                        .unwrap(),
+                    1
+                );
+                assert!(
+                    store
+                        .post_reply("r", "agent", "answer", Some("old"), Some("new-target"))
+                        .is_err()
+                );
+            }));
+        }
+        for handle in handles {
+            handle.join().unwrap();
+        }
+    });
+    assert_eq!(
+        soudan::Store::open(&path)
+            .unwrap()
+            .history("r", 0)
+            .unwrap()
+            .len(),
+        1
+    );
+}

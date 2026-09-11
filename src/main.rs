@@ -28,10 +28,12 @@ enum Commands {
     WebObserver { query: String },
     /// Wait for room messages without consuming them (exit 0 event, 124 timeout, 1 error).
     Wait {
+        #[arg(long, required_unless_present = "reply_to")]
+        room: Option<String>,
+        #[arg(long, required_unless_present = "reply_to")]
+        after: Option<i64>,
         #[arg(long)]
-        room: String,
-        #[arg(long)]
-        after: i64,
+        reply_to: Option<String>,
         #[arg(long, default_value_t = soudan::wait::DEFAULT_TIMEOUT)]
         timeout: u64,
     },
@@ -71,6 +73,8 @@ enum Commands {
         room: String,
         #[arg(long)]
         sender: String,
+        #[arg(long)]
+        in_reply_to: Option<String>,
         text: String,
     },
     /// Read up to 100 messages; pass the last ID as --after for the next page.
@@ -127,11 +131,20 @@ async fn main() -> Result<()> {
         Commands::Wait {
             room,
             after,
+            reply_to,
             timeout,
         } => Some((
-            soudan::wait::Watch::Room {
-                room: room.clone(),
-                after: *after,
+            if let Some(request_id) = reply_to {
+                soudan::wait::Watch::Reply {
+                    request_id: request_id.clone(),
+                    room: room.clone(),
+                    after: after.unwrap_or(0),
+                }
+            } else {
+                soudan::wait::Watch::Room {
+                    room: room.clone().expect("required by clap"),
+                    after: after.expect("required by clap"),
+                }
             },
             *timeout,
         )),
@@ -234,8 +247,13 @@ async fn main() -> Result<()> {
             }
         }
         Commands::Result { job_id } => serde_json::to_value(app.store.job(&job_id)?)?,
-        Commands::Post { room, sender, text } => {
-            serde_json::json!({"id":app.store.post(&room,&sender,&text)?})
+        Commands::Post {
+            room,
+            sender,
+            text,
+            in_reply_to,
+        } => {
+            serde_json::json!({"id":app.store.post_reply(&room,&sender,&text,None,in_reply_to.as_deref())?})
         }
         Commands::History { room, after } => {
             serde_json::to_value(app.store.history(&room, after)?)?

@@ -29,6 +29,7 @@ struct ResultArgs {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Post {
+    in_reply_to: Option<String>,
     request_id: Option<String>,
     room: String,
     sender: String,
@@ -69,7 +70,7 @@ impl Mcp {
             ("soudan_agents", "List agent plugins and local executable availability. Availability does not verify authentication.", json!({}), vec![]),
             ("soudan_consult", "Start an AI consultation and return a job ID immediately. Poll soudan_result for the answer. Reuse room for follow-up questions or invite another agent to the same discussion. Consultations use fresh headless CLI sessions with the recent room transcript.", json!({"agent":string,"prompt":{"type":"string","minLength":1,"maxLength":65536},"room":string,"request_id":string,"timeout_seconds":{"type":"integer","minimum":1,"maximum":600,"default":180}}), vec!["agent","prompt"]),
             ("soudan_result", "Read a consultation job. queued/running means wait briefly and poll again; completed includes result; failed includes error. Jobs survive MCP server disconnection.", json!({"job_id":string}), vec!["job_id"]),
-            ("soudan_post", "Post a message from your current interactive session to a shared room. This does not wake other editors; participants read with soudan_history.", json!({"room":string,"sender":string,"text":string,"request_id":string}), vec!["room","sender","text"]),
+            ("soudan_post", "Post a message from your current interactive session to a shared room. Set in_reply_to to the incoming Soudan request ID when replying. Posts do not live-send to other editors; participants can wait with soudan wait --reply-to or read with soudan_history.", json!({"room":string,"sender":string,"text":string,"request_id":string,"in_reply_to":string}), vec!["room","sender","text"]),
             ("soudan_history", "Read up to 100 room messages in ID order. Pass the last message ID as after to read the next page or poll for replies.", json!({"room":string,"after":{"type":"integer","minimum":0,"default":0}}), vec!["room"]),
         ].into_iter().map(|(name,desc,props,required)|Tool::new(name,desc,json!({"type":"object","properties":props,"required":required,"additionalProperties":false}).as_object().unwrap().clone())).collect()
     }
@@ -120,7 +121,7 @@ impl Mcp {
             "soudan_post" => {
                 let p: Post = serde_json::from_value(args)?;
                 Ok(
-                    json!({"id":self.app.store.post_once(&p.room,&p.sender,&p.text,p.request_id.as_deref())?}),
+                    json!({"id":self.app.store.post_reply(&p.room,&p.sender,&p.text,p.request_id.as_deref(),p.in_reply_to.as_deref())?}),
                 )
             }
             "soudan_history" => {

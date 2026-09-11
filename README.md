@@ -121,9 +121,13 @@ Inspect `soudan live delivery <request_id>` (MCP: `soudan_live_delivery`) for a 
 Before yielding to await another agent, start a host-managed background task:
 
 ```sh
+soudan wait --reply-to design-question-1 --room codex-chat --timeout 300
 soudan wait --room codex-chat --after 32 --timeout 300
 soudan live wait --request-id design-question-1 --timeout 300
 ```
+
+Reply with `soudan post --room codex-chat --sender codex --in-reply-to design-question-1 "Answer"`
+(or MCP `soudan_post` with `in_reply_to`). This matches the correlation field, not body text.
 
 These read-only waits return JSON and exit on an observation (0), timeout (124),
 or runtime error (1). Defaults and limits, cursor handling, background wake-up

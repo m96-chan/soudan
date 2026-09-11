@@ -12,16 +12,30 @@ pub struct Message {
     pub room: String,
     pub sender: String,
     pub text: String,
+    pub in_reply_to: Option<String>,
 }
 impl Store {
     pub fn open(path: &Path) -> Result<Self> {
-        let connection = Connection::open(path)?;
+        let mut connection = Connection::open(path)?;
         connection.busy_timeout(Duration::from_secs(5))?;
         connection.execute_batch("PRAGMA journal_mode=WAL;
           CREATE TABLE IF NOT EXISTS messages(id INTEGER PRIMARY KEY AUTOINCREMENT, room TEXT NOT NULL, sender TEXT NOT NULL, text TEXT NOT NULL);
           CREATE INDEX IF NOT EXISTS messages_room ON messages(room,id);
           CREATE TABLE IF NOT EXISTS requests(scope TEXT NOT NULL, key TEXT NOT NULL, fingerprint TEXT NOT NULL, result TEXT NOT NULL, PRIMARY KEY(scope,key));
           CREATE TABLE IF NOT EXISTS jobs(id TEXT PRIMARY KEY, room TEXT NOT NULL, agent TEXT NOT NULL, prompt TEXT NOT NULL, timeout INTEGER NOT NULL, deadline INTEGER NOT NULL, status TEXT NOT NULL, result TEXT, error TEXT);")?;
+        let tx = connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let exists = {
+            let mut query = tx.prepare("PRAGMA table_info(messages)")?;
+            let names = query
+                .query_map([], |r| r.get::<_, String>(1))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            names.iter().any(|name| name == "in_reply_to")
+        };
+        if !exists {
+            tx.execute_batch("ALTER TABLE messages ADD COLUMN in_reply_to TEXT")?;
+        }
+        tx.execute_batch("CREATE INDEX IF NOT EXISTS messages_reply ON messages(in_reply_to,id)")?;
+        tx.commit()?;
         Ok(Self {
             connection: Mutex::new(connection),
         })
@@ -36,6 +50,19 @@ impl Store {
         text: &str,
         request_id: Option<&str>,
     ) -> Result<i64> {
+        self.post_reply(room, sender, text, request_id, None)
+    }
+    pub fn post_reply(
+        &self,
+        room: &str,
+        sender: &str,
+        text: &str,
+        request_id: Option<&str>,
+        in_reply_to: Option<&str>,
+    ) -> Result<i64> {
+        if let Some(id) = in_reply_to {
+            crate::live::validate_request_id(id)?;
+        }
         ensure!(
             !room.trim().is_empty() && room.len() <= 128,
             "Room must contain 1–128 bytes"
@@ -55,11 +82,20 @@ impl Store {
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let scope = serde_json::to_string(&("post", room, sender))?;
         if let Some(id) = previous(&tx, &scope, request_id, text)? {
-            return Ok(id.parse()?);
+            let id: i64 = id.parse()?;
+            let saved: Option<String> =
+                tx.query_row("SELECT in_reply_to FROM messages WHERE id=?1", [id], |r| {
+                    r.get(0)
+                })?;
+            ensure!(
+                saved.as_deref() == in_reply_to,
+                "request_id was already used with different arguments"
+            );
+            return Ok(id);
         }
         tx.execute(
-            "INSERT INTO messages(room,sender,text) VALUES(?1,?2,?3)",
-            params![room, sender, text],
+            "INSERT INTO messages(room,sender,text,in_reply_to) VALUES(?1,?2,?3,?4)",
+            params![room, sender, text, in_reply_to],
         )?;
         let id = tx.last_insert_rowid();
         remember(&tx, &scope, request_id, text, &id.to_string())?;
@@ -71,7 +107,7 @@ impl Store {
             .connection
             .lock()
             .map_err(|_| anyhow::anyhow!("Database lock poisoned"))?;
-        let mut stmt = conn.prepare("SELECT id,room,sender,text FROM messages WHERE room=?1 AND id>?2 ORDER BY id LIMIT 100")?;
+        let mut stmt = conn.prepare("SELECT id,room,sender,text,in_reply_to FROM messages WHERE room=?1 AND id>?2 ORDER BY id LIMIT 100")?;
         Ok(stmt
             .query_map(params![room, after], |r| {
                 Ok(Message {
@@ -79,6 +115,7 @@ impl Store {
                     room: r.get(1)?,
                     sender: r.get(2)?,
                     text: r.get(3)?,
+                    in_reply_to: r.get(4)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?)

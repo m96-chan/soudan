@@ -9,8 +9,18 @@ pub const DEFAULT_TIMEOUT: u64 = 300;
 pub const MAX_TIMEOUT: u64 = 3600;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Watch {
-    Room { room: String, after: i64 },
-    Delivery { request_id: String },
+    Room {
+        room: String,
+        after: i64,
+    },
+    Delivery {
+        request_id: String,
+    },
+    Reply {
+        request_id: String,
+        room: Option<String>,
+        after: i64,
+    },
 }
 impl Watch {
     pub fn validate(&self) -> Result<()> {
@@ -22,6 +32,21 @@ impl Watch {
                 );
                 ensure!(*after >= 0, "after must be nonnegative");
             }
+            Self::Reply {
+                request_id,
+                room,
+                after,
+            } => {
+                crate::live::validate_request_id(request_id)?;
+                ensure!(*after >= 0, "after must be nonnegative");
+                if let Some(room) = room {
+                    Self::Room {
+                        room: room.clone(),
+                        after: *after,
+                    }
+                    .validate()?;
+                }
+            }
             Self::Delivery { request_id } => crate::live::validate_request_id(request_id)?,
         }
         Ok(())
@@ -29,19 +54,17 @@ impl Watch {
     fn snapshot(&self, workspace: &Path, proc: &Path) -> Result<Option<Value>> {
         match self {
             Self::Room { room, after } => {
-                match std::fs::metadata(workspace.join(".soudan/state.db")) {
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-                    Err(e) => return Err(e.into()),
-                    Ok(_) => (),
-                }
-                let db = open_readonly(workspace)?;
-                let exists: bool=db.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='messages')",[],|r|r.get(0))?;
-                if !exists {
-                    return Ok(None);
-                }
-                let mut q=db.prepare("SELECT id,room,sender,text FROM messages WHERE room=?1 AND id>?2 ORDER BY id LIMIT 100")?;
-                let messages=q.query_map(params![room,after],|r|Ok(json!({"id":r.get::<_,i64>(0)?,"room":r.get::<_,String>(1)?,"sender":r.get::<_,String>(2)?,"text":r.get::<_,String>(3)?})))?.collect::<rusqlite::Result<Vec<_>>>()?;
+                let messages = message_snapshot(workspace, Some(room), *after, None)?;
                 Ok(messages.last().map(|last|json!({"outcome":"event","kind":"room","room":room,"after":after,"last_id":last["id"],"messages":messages})))
+            }
+            Self::Reply {
+                request_id,
+                room,
+                after,
+            } => {
+                let messages =
+                    message_snapshot(workspace, room.as_deref(), *after, Some(request_id))?;
+                Ok(messages.last().map(|last|json!({"outcome":"event","kind":"reply","request_id":request_id,"room":room,"after":after,"last_id":last["id"],"messages":messages})))
             }
             Self::Delivery { request_id } => {
                 let delivery = crate::live::delivery_readonly_in(workspace, request_id, proc)?;
@@ -49,6 +72,43 @@ impl Watch {
             }
         }
     }
+}
+
+fn message_snapshot(
+    workspace: &Path,
+    room: Option<&str>,
+    after: i64,
+    reply: Option<&str>,
+) -> Result<Vec<Value>> {
+    match std::fs::metadata(workspace.join(".soudan/state.db")) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
+        Err(e) => return Err(e.into()),
+        Ok(_) => (),
+    }
+    let db = open_readonly(workspace)?;
+    let columns = {
+        let mut q = db.prepare("PRAGMA table_info(messages)")?;
+        q.query_map([], |r| r.get::<_, String>(1))?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+    };
+    let correlated = columns.iter().any(|name| name == "in_reply_to");
+    if columns.is_empty() || (reply.is_some() && !correlated) {
+        return Ok(vec![]);
+    }
+    let column = if correlated { "in_reply_to" } else { "NULL" };
+    let predicate = if reply.is_some() {
+        "in_reply_to=?3 AND (?1 IS NULL OR room=?1)"
+    } else {
+        "room=?1 AND ?3 IS NULL"
+    };
+    let sql = format!(
+        "SELECT id,room,sender,text,{column} FROM messages WHERE {predicate} AND id>?2 ORDER BY id LIMIT ?4"
+    );
+    let mut q = db.prepare(&sql)?;
+    Ok(q.query_map(params![room,after,reply,if reply.is_some() { 1 } else { 100 }], |r| Ok(json!({
+        "id":r.get::<_,i64>(0)?, "room":r.get::<_,String>(1)?, "sender":r.get::<_,String>(2)?,
+        "text":r.get::<_,String>(3)?, "in_reply_to":r.get::<_,Option<String>>(4)?
+    })))?.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
 pub(crate) fn open_readonly(workspace: &Path) -> Result<Connection> {

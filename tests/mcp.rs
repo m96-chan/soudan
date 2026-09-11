@@ -218,3 +218,39 @@ async fn live_tools_are_discoverable_and_report_offline_bridge_as_tool_error() {
     let text = response["result"]["content"][0]["text"].as_str().unwrap();
     assert!(text.contains("kitty"), "{text}");
 }
+
+#[tokio::test]
+async fn correlated_posts_preserve_reply_ids_and_reject_retargeted_retries() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut client = Client::start(dir.path()).await;
+    let tools = client
+        .rpc(json!({"jsonrpc":"2.0","id":99,"method":"tools/list"}))
+        .await;
+    let post = tools["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == "soudan_post")
+        .unwrap();
+    assert_eq!(
+        post["inputSchema"]["properties"]["in_reply_to"]["type"],
+        "string"
+    );
+    let args = json!({"room":"r","sender":"agent","text":"answer","request_id":"post-1","in_reply_to":"request-1"});
+    let first = payload(client.call("soudan_post", args.clone()).await);
+    let again = payload(client.call("soudan_post", args.clone()).await);
+    assert_eq!(first["id"], again["id"]);
+    for replacement in [Some("request-2"), None, Some("bad id")] {
+        let mut changed = args.clone();
+        if let Some(id) = replacement {
+            changed["in_reply_to"] = json!(id);
+        } else {
+            changed.as_object_mut().unwrap().remove("in_reply_to");
+        }
+        let error = client.call("soudan_post", changed).await;
+        assert_eq!(error["result"]["isError"], true);
+    }
+    let history = payload(client.call("soudan_history", json!({"room":"r"})).await);
+    assert_eq!(history.as_array().unwrap().len(), 1);
+    assert_eq!(history[0]["in_reply_to"], "request-1");
+}
