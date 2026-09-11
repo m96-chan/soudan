@@ -1,4 +1,5 @@
 pub mod config;
+pub mod copilot;
 pub mod process;
 pub mod store;
 pub use config::Config;

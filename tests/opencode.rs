@@ -88,6 +88,9 @@ mod http {
                     }
                     Err(e) => panic!("{e}"),
                 };
+                // BSD/macOS accept inherits the listener's nonblocking mode.
+                // The connection handler below uses blocking reads with timeouts.
+                stream.set_nonblocking(false).unwrap();
                 stream
                     .set_read_timeout(Some(Duration::from_secs(3)))
                     .unwrap();

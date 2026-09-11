@@ -9,9 +9,10 @@ The transport depends on the agent, because a terminal is a poor substitute for 
 | Codex CLI | Codex's own session queue | none |
 | Claude Code | Native peer inbox socket (Linux) | messaging enabled in the target |
 | Grok Build | ACP through its shared leader process | `use_leader = true` before the chat is opened |
+| Copilot CLI | TUI JSON-RPC server (Linux discovery) | `--ui-server --host 127.0.0.1 --port N`; see [setup](copilot.md) |
 | OpenCode | Published HTTP session API (Linux discovery) | loopback listener; see [setup](opencode.md) |
 
-A target's id names its transport, because each agent has exactly one: Codex ids begin `codex:`, Claude Code ids begin `claude:`, Grok Build ids begin `grok:`, and OpenCode ids begin `opencode:`. OpenCode targets are saved sessions addressable through a running server, not proof of which conversation its TUI displays. There is no fallback between them. A session whose own API cannot be reached is reported as an error rather than reached some other way, because the alternative was typing into its terminal, and keystrokes cannot tell an empty composer from one holding somebody's unsent draft.
+A target's id names its transport, because each agent has exactly one: Codex ids begin `codex:`, Claude Code ids begin `claude:`, Grok Build ids begin `grok:`, OpenCode ids begin `opencode:`, and Copilot ids begin `copilot:`. Copilot discovery lists the current foreground session of a TUI server. OpenCode targets are saved sessions addressable through a running server, not proof of which conversation its TUI displays. There is no fallback between them. A session whose own API cannot be reached is reported as an error rather than reached some other way, because the alternative was typing into its terminal, and keystrokes cannot tell an empty composer from one holding somebody's unsent draft.
 
 **Cursor is not supported here.** It was reached by typing into its terminal through a Kitty bridge, which needed a keypress to arm, could not protect a draft, and existed for that one agent. That transport has been removed. Cursor ACP starts a separate process and does not attach to an already-running chat; its headless plugin integration is unaffected and still works with `soudan consult`.
 
@@ -128,6 +129,10 @@ cargo test --locked
 The tests build fake `/proc` trees and fake session logs, so they never depend on a running agent. Verifying delivery to a real session is a separate exercise: send to a chat you own and confirm the receipt, as recorded in [the native verification report](claude-native-verification.md).
 
 ## Receipt evidence
+
+Copilot verifies an acknowledged user message ID and exact content in complete,
+post-send events, with file identity and anchor checks. Missing acknowledgements
+remain unknown and are not automatically retried. See [Copilot receipts](copilot.md#delivery-and-receipts).
 
 OpenCode uses an exact user message ID from its session API instead of log
 markers. Its receipt can be `taken`, `waiting`, or `unknown`; see the

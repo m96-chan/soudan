@@ -28,7 +28,7 @@ soudan doctor
 
 Soudan is not yet published to crates.io. Install from this checkout; `cargo install soudan` is not an available release workflow yet.
 
-`install` writes project-scoped configuration for all three clients, using the absolute installed executable and project path. It preserves other servers and backs up changed configurations. Reload MCP servers or restart the clients. Claude Code may ask you to approve the project server; Codex must trust the project before loading its project configuration. Cursor may need the server enabled in its MCP settings.
+`install` writes project-scoped configuration for all six clients, using the absolute installed executable and project path. It preserves other servers and backs up changed configurations. Reload MCP servers or restart the clients. Claude Code may ask you to approve the project server; Codex must trust the project before loading its project configuration. Cursor may need the server enabled in its MCP settings.
 
 Ask your agent:
 
@@ -79,9 +79,21 @@ soudan live send <TARGET_ID> --request-id hello-1 'Hello from the other agent. P
 soudan live read <TARGET_ID>
 ```
 
-Grok uses its shared leader; OpenCode uses its published HTTP session API. See [OpenCode setup and receipts](docs/opencode.md) for loopback startup, authentication, and API reply reading. Live sends accept `--sender codex`, an explicitly unverified sender label.
+Grok uses its shared leader; OpenCode uses its published HTTP session API. Copilot uses its TUI JSON-RPC server; start it with `copilot --ui-server --host 127.0.0.1 --port 4097` (see [Copilot setup](docs/copilot.md)). See [OpenCode setup and receipts](docs/opencode.md) for loopback startup, authentication, and API reply reading. Live sends accept `--sender codex`, an explicitly unverified sender label.
 
 Cursor is not a live target. Its terminal transport has been removed; its ACP interface does not attach to an already-running chat. `soudan consult --agent cursor` is unaffected.
+
+## GitHub Copilot CLI
+
+```sh
+soudan install --client copilot
+soudan consult --agent copilot --room review --wait 'Review this design.'
+```
+
+Installation uses the project `.mcp.json` shared with Claude Code. Trust the
+workspace in Copilot and approve MCP tools as needed. Consultations launch a fresh
+Copilot CLI with tools disabled and replay the room history. See
+[Copilot compatibility and setup](docs/copilot.md).
 
 ## Plugins
 

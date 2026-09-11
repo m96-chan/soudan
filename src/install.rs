@@ -9,7 +9,16 @@ pub fn install(
     config: Option<&Path>,
 ) -> Result<Vec<String>> {
     ensure!(
-        ["all", "claude-code", "codex", "cursor", "grok", "opencode"].contains(&client),
+        [
+            "all",
+            "claude-code",
+            "codex",
+            "cursor",
+            "grok",
+            "opencode",
+            "copilot"
+        ]
+        .contains(&client),
         "Unknown client: {client}"
     );
     let mut args = vec![
@@ -27,7 +36,7 @@ pub fn install(
     args.push("serve".to_string());
     let mut writes = vec![];
     for (name, relative) in [("claude-code", ".mcp.json"), ("cursor", ".cursor/mcp.json")] {
-        if client != "all" && client != name {
+        if client != "all" && client != name && !(client == "copilot" && name == "claude-code") {
             continue;
         }
         let path = workspace.join(relative);

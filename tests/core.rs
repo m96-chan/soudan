@@ -237,21 +237,34 @@ fn builtin_plugins_cover_the_products_soudan_delivers_to() {
     );
 }
 
-#[test]
-fn copilot_plugin_asks_without_shell_or_write_access() {
-    use soudan::config::{Input, Output};
-    let config = Config::parse("").unwrap();
-    // Verified against GitHub Copilot CLI 1.0.83 locally: `--output-format
-    // json` is JSONL rather than one object, so the text format is used and
-    // the answer arrives alone on stdout. `-p` takes the prompt, and a
-    // non-interactive run cannot confirm a tool, so shell and write are denied
-    // outright rather than left to a prompt that cannot be answered.
-    let copilot = &config.agents["copilot"];
-    assert_eq!(copilot.command, "copilot");
-    assert!(matches!(copilot.input, Input::Argument));
-    assert!(matches!(copilot.output, Output::Text));
-    assert_eq!(copilot.args.last().unwrap(), "-p");
-    assert!(copilot.args.iter().any(|arg| arg == "--deny-tool=shell"));
-    assert!(copilot.args.iter().any(|arg| arg == "--deny-tool=write"));
-    assert!(copilot.args.iter().any(|arg| arg == "--no-color"));
+#[cfg(unix)]
+#[tokio::test]
+async fn copilot_consultation_passes_literal_prompt_and_disables_tools() {
+    let dir = tempfile::tempdir().unwrap();
+    let script = dir.path().join("copilot-fixture.sh");
+    std::fs::write(
+        &script,
+        r#"#!/bin/sh
+[ "$SOUDAN_CHILD" = 1 ] || exit 2
+[ "$1" = --silent ] || exit 3
+[ "$2" = --stream=off ] || exit 4
+[ "$3" = --available-tools= ] || exit 5
+[ "$4" = --disable-builtin-mcps ] || exit 6
+[ "$5" = --no-ask-user ] || exit 7
+[ "$6" = --no-auto-update ] || exit 8
+[ "$7" = --no-custom-instructions ] || exit 9
+[ "$8" = --prompt ] || exit 10
+[ "$#" = 9 ] || exit 11
+printf '%s' "$9"
+"#,
+    )
+    .unwrap();
+    let mut plugin = Config::default().agents["copilot"].clone();
+    plugin.command = "sh".into();
+    plugin.args.insert(0, script.to_str().unwrap().into());
+    let prompt = "日本語 ' $(false)\nsecond line";
+    assert_eq!(
+        run_plugin(&plugin, prompt, dir.path(), 2).await.unwrap(),
+        prompt
+    );
 }

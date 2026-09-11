@@ -71,6 +71,18 @@ the `--config` path the installer records, canonicalized, against the raw
 temporary path. The fix belonged in the expectation, not in the assertion:
 canonicalize the expected path and keep checking that it reaches the client.
 
+**Accepted socket mode.** TCP fixture listeners use nonblocking `accept` so
+shutdown can be polled, but their connection handlers perform blocking reads.
+BSD/macOS inherits the listener's nonblocking mode on accepted sockets; Linux
+does not. Set `stream.set_nonblocking(false)` explicitly after accepting.
+Otherwise a read can return `WouldBlock` before a frame arrives, closing the
+connection and producing EOF or `Broken pipe` in the client. Reproduce on Linux
+by temporarily setting the accepted stream to nonblocking before the handler;
+`cargo test --locked --test copilot rpc::lost_ack_is_uncertain_and_retry_never_sends_again`
+then fails with `not_delivered` instead of the expected `uncertain`. Restoring
+blocking mode passes without weakening the receipt assertions. See
+[accept portability notes](https://man7.org/linux/man-pages/man2/accept.2.html).
+
 ## Live adapter dialogue
 
 After installing and authenticating the CLIs:

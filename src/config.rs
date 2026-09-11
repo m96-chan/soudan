@@ -75,6 +75,22 @@ impl Default for Config {
                 Output::Text,
             ),
             (
+                "copilot",
+                "copilot",
+                vec![
+                    "--silent",
+                    "--stream=off",
+                    "--available-tools=",
+                    "--disable-builtin-mcps",
+                    "--no-ask-user",
+                    "--no-auto-update",
+                    "--no-custom-instructions",
+                    "--prompt",
+                ],
+                Input::Argument,
+                Output::Text,
+            ),
+            (
                 "cursor",
                 "cursor-agent",
                 vec!["-p", "--mode", "ask", "--output-format", "json", "--trust"],
@@ -101,26 +117,6 @@ impl Default for Config {
                 "opencode",
                 "opencode",
                 vec!["run", "--pure", "--agent", "plan"],
-                Input::Argument,
-                Output::Text,
-            ),
-            // GitHub Copilot CLI's `--output-format json` is JSONL, so the text
-            // format is used. A non-interactive run cannot answer a permission
-            // prompt, so shell and write access are denied outright instead of
-            // being left to a prompt nobody can confirm.
-            (
-                "copilot",
-                "copilot",
-                vec![
-                    "--output-format",
-                    "text",
-                    "--no-color",
-                    "--log-level",
-                    "none",
-                    "--deny-tool=shell",
-                    "--deny-tool=write",
-                    "-p",
-                ],
                 Input::Argument,
                 Output::Text,
             ),

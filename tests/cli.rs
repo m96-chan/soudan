@@ -308,3 +308,40 @@ fn grok_install_preserves_unrelated_servers() {
     );
     assert!(grok["mcp_servers"]["soudan"]["command"].is_str());
 }
+
+#[test]
+fn copilot_install_uses_shared_workspace_config_and_preserves_tool_filter() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join(".mcp.json");
+    fs::write(
+        &path,
+        r#"{"mcpServers":{"other":{"command":"keep"},"soudan":{"tools":["soudan_history"]}}}"#,
+    )
+    .unwrap();
+    for _ in 0..2 {
+        let output = bin()
+            .arg("--workspace")
+            .arg(dir.path())
+            .args(["install", "--client", "copilot"])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let value: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+    assert_eq!(value["mcpServers"]["other"]["command"], "keep");
+    assert_eq!(
+        value["mcpServers"]["soudan"]["tools"],
+        serde_json::json!(["soudan_history"])
+    );
+    assert_eq!(
+        value["mcpServers"]["soudan"]["args"][1],
+        dir.path().canonicalize().unwrap().to_str().unwrap()
+    );
+    assert!(!dir.path().join(".codex").exists());
+    assert!(!dir.path().join(".cursor").exists());
+}

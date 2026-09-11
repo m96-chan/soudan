@@ -60,6 +60,8 @@ pub fn discover_in(proc: &Path, workspace: &Path) -> Result<Vec<LiveTarget>> {
         if let Ok(Some(t)) = inspect(proc, workspace, pid) {
             if t.agent == "opencode" {
                 targets.extend(crate::opencode::discover_in(proc, workspace, &t)?);
+            } else if t.agent == "copilot" {
+                targets.extend(crate::copilot::discover_in(proc, workspace, &t)?);
             } else {
                 targets.push(t);
             }
@@ -77,6 +79,8 @@ fn inspect(proc: &Path, workspace: &Path, pid: u32) -> Result<Option<LiveTarget>
     let exe = exe.to_string_lossy();
     let agent = if exe.contains("/claude/") || exe.ends_with("/claude") {
         "claude-code"
+    } else if exe.ends_with("/copilot") {
+        "copilot"
     } else if exe.ends_with("/codex") {
         "codex"
     } else if exe.ends_with("/opencode") || exe.ends_with("/opencode.exe") {
@@ -100,6 +104,7 @@ fn inspect(proc: &Path, workspace: &Path, pid: u32) -> Result<Option<LiveTarget>
     // The id names the transport, because each agent has exactly one.
     let transport = match agent {
         "codex" => "codex",
+        "copilot" => "copilot",
         "grok" => "grok",
         "opencode" => "opencode",
         _ => "claude",
@@ -228,6 +233,13 @@ fn native(_: &Path, _: &str) -> Result<Option<(LiveTarget, crate::codex::Session
 }
 
 pub async fn read(workspace: &Path, target: &str) -> Result<Value> {
+    if target.starts_with("copilot:") {
+        let (workspace, target) = (workspace.to_owned(), target.to_owned());
+        return tokio::task::spawn_blocking(move || {
+            crate::copilot::state(Path::new("/proc"), &workspace, &target)
+        })
+        .await?;
+    }
     if target.starts_with("opencode:") {
         let workspace = workspace.to_owned();
         let target = target.to_owned();
@@ -269,7 +281,7 @@ pub async fn read(workspace: &Path, target: &str) -> Result<Value> {
 fn unsupported(target: &str) -> Result<Value> {
     let transport = target.split(':').next().unwrap_or(target);
     anyhow::bail!(
-        "No live transport for {transport:?} targets; Soudan delivers to Claude Code, Codex, Grok, and OpenCode through their own session APIs"
+        "No live transport for {transport:?} targets; Soudan delivers to Claude Code, Codex, Grok, OpenCode, and Copilot through their own session APIs"
     )
 }
 pub async fn send(workspace: &Path, target: &str, text: &str, request_id: &str) -> Result<Value> {
@@ -321,6 +333,17 @@ async fn send_inner(
         return Ok(
             json!({"request_id":request_id,"target":target,"status":status,"replayed":true}),
         );
+    }
+    if target.starts_with("copilot:") {
+        return send_copilot_in(
+            workspace,
+            target,
+            text,
+            request_id,
+            sender,
+            Path::new("/proc"),
+        )
+        .await;
     }
     if target.starts_with("opencode:") {
         return send_opencode_in(
@@ -718,6 +741,74 @@ pub async fn send_opencode_in(
     }
 }
 
+/// Injectable process root keeps transport tests independent of real sessions.
+pub async fn send_copilot_in(
+    workspace: &Path,
+    target: &str,
+    text: &str,
+    request_id: &str,
+    sender: Option<&str>,
+    proc: &Path,
+) -> Result<Value> {
+    ensure!(
+        std::env::var_os("SOUDAN_CHILD").is_none(),
+        "Consultation workers cannot inject messages into live chats"
+    );
+    let prompt = prompt(request_id, text, sender)?;
+    if let Some(status) = settled_as(workspace, request_id, target, text, sender)? {
+        return Ok(
+            json!({"request_id":request_id,"target":target,"status":status,"replayed":true}),
+        );
+    }
+    let session = crate::copilot::resolve_in(proc, workspace, target)?;
+    let evidence = crate::copilot::Evidence::capture(session, prompt)?;
+    let db = rusqlite::Connection::open(workspace.join(".soudan/state.db"))?;
+    db.busy_timeout(Duration::from_secs(5))?;
+    delivery_schema(&db)?;
+    if let Claim::Recorded(status) = claim(
+        &db,
+        request_id,
+        target,
+        text,
+        ("", sender),
+        Some(&serde_json::to_string(&evidence)?),
+    )? {
+        return Ok(
+            json!({"request_id":request_id,"target":target,"status":status,"replayed":true}),
+        );
+    }
+    let proc = proc.to_owned();
+    let (mut evidence, result) = tokio::task::spawn_blocking(move || {
+        let result = crate::copilot::send(&proc, &evidence);
+        (evidence, result)
+    })
+    .await?;
+    match result {
+        Ok(message_id) => {
+            evidence.message_id = Some(message_id.clone());
+            db.execute(
+                "UPDATE live_deliveries SET status='queued',receipt_basis=?2 WHERE request_id=?1",
+                rusqlite::params![request_id, serde_json::to_string(&evidence)?],
+            )?;
+            Ok(
+                json!({"request_id":request_id,"target":target,"status":"queued","transport":"copilot_rpc","session":evidence.session.id,"message_id":message_id,"next":"Read the target for the assistant reply; queued is not a reply acknowledgement."}),
+            )
+        }
+        Err(failure) => {
+            let status = match failure {
+                crate::codex::Failure::NotAttempted(_) => "not_delivered",
+                crate::codex::Failure::Uncertain(_) => "uncertain",
+            };
+            let error = failure.into_error();
+            db.execute(
+                "UPDATE live_deliveries SET status=?2,error=?3 WHERE request_id=?1",
+                rusqlite::params![request_id, status, error.to_string()],
+            )?;
+            Err(error)
+        }
+    }
+}
+
 pub async fn notify(workspace: &Path, target: &str, text: &str) -> Result<Value> {
     ensure!(
         target.starts_with("opencode:"),
@@ -778,6 +869,10 @@ fn delivery_row(
         .as_str()
         .filter(|t| t.starts_with("opencode:"))
         .map(|target| crate::receipt::observe_opencode(basis.as_deref(), proc, workspace, target));
+    let copilot_receipt = row["target"]
+        .as_str()
+        .filter(|t| t.starts_with("copilot:"))
+        .map(|target| crate::copilot::observe(basis.as_deref(), proc, workspace, target));
     let basis = basis.and_then(|s| serde_json::from_str::<crate::receipt::Basis>(&s).ok());
     let has_sender: bool = db.query_row(
         "SELECT EXISTS(SELECT 1 FROM pragma_table_info('live_deliveries') WHERE name='sender')",
@@ -795,7 +890,7 @@ fn delivery_row(
         Value::Null
     };
     row["sender_verification"] = "unverified_declaration".into();
-    row["receipt"] = opencode_receipt.unwrap_or_else(|| {
+    row["receipt"] = copilot_receipt.or(opencode_receipt).unwrap_or_else(|| {
         crate::receipt::observe(
             basis.as_ref(),
             proc,
