@@ -80,6 +80,13 @@ fn thread_state_reports_the_last_reply_and_whether_a_turn_is_running() {
     assert_eq!(empty["status"], "unknown");
     assert!(empty["last_agent_message"].is_null());
 
+    // An interrupted turn is over, but it is not a turn that answered.
+    let aborted = r#"{"type":"event_msg","payload":{"type":"turn_aborted"}}"#;
+    std::fs::write(&path, format!("{complete}\n{started}\n{aborted}\n")).unwrap();
+    let stopped = state(&path).unwrap();
+    assert_eq!(stopped["status"], "aborted");
+    assert_eq!(stopped["last_agent_message"], "done");
+
     let bulk = format!("{}\n", r#"{"type":"response_item","payload":{}}"#).repeat(8000);
     std::fs::write(&path, format!("{started}\n{bulk}")).unwrap();
     assert!(std::fs::metadata(&path).unwrap().len() > 262144);

@@ -37,7 +37,7 @@ soudan live read codex:900463:210017161
 }
 ```
 
-`status` is `idle`, `running`, or `unknown`. It distinguishes a turn in flight from a finished one, so a reply is not mistaken for a partially rendered screen. `unknown` means no start or completion appeared in the part of the transcript that was read, which a very long turn can cause; it is not a claim that the session is free. Delivery reports `queued`, which means Codex accepted the message, not that it answered.
+`status` is `idle`, `running`, `aborted`, or `unknown`. It distinguishes a turn in flight from a finished one, so a reply is not mistaken for a partially rendered screen. `unknown` means no start or completion appeared in the part of the transcript that was read, which a very long turn can cause; it is not a claim that the session is free. `aborted` means the last turn was interrupted: Codex does not drain its queue after an interruption, so a message delivered to that thread waits for the person at the keyboard. Delivery reports `queued`, which means Codex accepted the message, not that it answered.
 
 Codex accepts a message **even while it is working**, and answers it in order. There is no draft to protect and no idle composer to wait for, so none of the terminal restrictions below apply. `codex` must be on `PATH`; when it is missing the delivery is recorded as `not_delivered` and the same request ID may be retried, because a command that never ran cannot have delivered anything.
 

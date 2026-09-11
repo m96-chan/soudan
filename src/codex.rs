@@ -129,6 +129,11 @@ fn tail(path: &Path, limit: u64) -> Result<String> {
 /// This is a structured answer from Codex's own transcript, not a screen scrape.
 /// A turn whose records outgrow the window read here reports `unknown` rather than
 /// inheriting a default, so a working session is never reported as finished.
+///
+/// A turn can end by being interrupted as well as by finishing. Reporting that as
+/// `aborted` rather than `idle` matters, because Codex does not drain its queue
+/// after an interruption: a message delivered to that thread waits for the person
+/// at the keyboard.
 pub fn state(rollout: &Path) -> Result<Value> {
     let mut status = "unknown";
     let mut last_agent_message = None;
@@ -141,6 +146,7 @@ pub fn state(rollout: &Path) -> Result<Value> {
         }
         match record["payload"]["type"].as_str() {
             Some("task_started") => status = "running",
+            Some("turn_aborted") => status = "aborted",
             Some("task_complete") => {
                 status = "idle";
                 if let Some(text) = record["payload"]["last_agent_message"].as_str() {
