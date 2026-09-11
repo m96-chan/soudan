@@ -19,6 +19,17 @@ struct Cli {
 }
 #[derive(Subcommand)]
 enum Commands {
+    /// Wait for room messages without consuming them (exit 0 event, 124 timeout, 1 error).
+    Wait {
+        #[arg(long)]
+        room: String,
+        #[arg(long)]
+        after: i64,
+        #[arg(long, default_value_t = soudan::wait::DEFAULT_TIMEOUT)]
+        timeout: u64,
+    },
+    #[command(hide = true)]
+    WaitObserver { watch: String, timeout: u64 },
     /// Discover, connect, and send messages to already-open terminal chats.
     Live {
         #[command(subcommand)]
@@ -67,6 +78,13 @@ enum Commands {
 }
 #[derive(Subcommand)]
 enum LiveCommands {
+    /// Wait until receipt is no longer waiting; unknown is inconclusive, not success.
+    Wait {
+        #[arg(long)]
+        request_id: String,
+        #[arg(long, default_value_t = soudan::wait::DEFAULT_TIMEOUT)]
+        timeout: u64,
+    },
     /// Read a saved delivery status without resending.
     Delivery {
         request_id: String,
@@ -93,6 +111,48 @@ enum LiveCommands {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+    // Waits must bypass App::open: it creates state and enables WAL.
+    let waiting = match &cli.command {
+        Commands::Wait {
+            room,
+            after,
+            timeout,
+        } => Some((
+            soudan::wait::Watch::Room {
+                room: room.clone(),
+                after: *after,
+            },
+            *timeout,
+        )),
+        Commands::Live {
+            command:
+                LiveCommands::Wait {
+                    request_id,
+                    timeout,
+                },
+        } => Some((
+            soudan::wait::Watch::Delivery {
+                request_id: request_id.clone(),
+            },
+            *timeout,
+        )),
+        _ => None,
+    };
+    if let Some((watch, timeout)) = waiting {
+        let value = soudan::wait::supervise(&cli.workspace, &watch, timeout).await;
+        println!("{}", serde_json::to_string(&value)?);
+        std::process::exit(soudan::wait::exit_code(&value));
+    }
+    if let Commands::WaitObserver { watch, timeout } = &cli.command {
+        let result = async {
+            let watch = serde_json::from_str(watch)?;
+            soudan::wait::observe(&cli.workspace, &watch, *timeout).await
+        }
+        .await;
+        let value = result.unwrap_or_else(|e| soudan::wait::error(format!("{e:#}")));
+        println!("{}", serde_json::to_string(&value)?);
+        return Ok(());
+    }
     if let Commands::Install { client } = &cli.command {
         let paths = install(
             &cli.workspace.canonicalize()?,
@@ -105,6 +165,7 @@ async fn main() -> Result<()> {
     }
     let app = App::open(&cli.workspace, cli.config.as_deref())?;
     let value = match cli.command {
+        Commands::Wait { .. } | Commands::WaitObserver { .. } => unreachable!(),
         Commands::Serve => {
             soudan::mcp::Mcp { app }
                 .serve(rmcp::transport::stdio())
@@ -118,6 +179,7 @@ async fn main() -> Result<()> {
             return Ok(());
         }
         Commands::Live { command } => match command {
+            LiveCommands::Wait { .. } => unreachable!(),
             LiveCommands::Delivery { request_id } => {
                 soudan::live::delivery(&app.workspace, &request_id)?
             }

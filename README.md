@@ -126,3 +126,15 @@ cargo clippy --locked --all-targets -- -D warnings
 Tests use deterministic local executables and temporary workspaces; they do not call paid models. Live checks are separate and opt-in. Licensed under [MIT](LICENSE).
 
 Inspect `soudan live delivery <request_id>` (MCP: `soudan_live_delivery`) for a derived `receipt.status`: `taken`, `waiting`, `blocked`, `lost`, or `unknown`. Saved sender status is unchanged. See [receipt evidence and limitations](docs/live-chats.md#receipt-evidence).
+
+Before yielding to await another agent, start a host-managed background task:
+
+```sh
+soudan wait --room codex-chat --after 32 --timeout 300
+soudan live wait --request-id design-question-1 --timeout 300
+```
+
+These read-only waits return JSON and exit on an observation (0), timeout (124),
+or runtime error (1). Defaults and limits, cursor handling, background wake-up
+requirements and the proposed direct inbox route are in [Waiting for another
+agent](docs/waiting.md).

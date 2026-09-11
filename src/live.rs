@@ -782,7 +782,35 @@ pub fn delivery_in(workspace: &Path, id: &str, proc: &Path) -> Result<Value> {
     let db = rusqlite::Connection::open(workspace.join(".soudan/state.db"))?;
     db.busy_timeout(Duration::from_secs(5))?;
     delivery_schema(&db)?;
-    let (mut row, basis) = db.query_row("SELECT target,text,status,error,receipt_basis FROM live_deliveries WHERE request_id=?1", [id], |r| Ok((json!({"request_id":id,"target":r.get::<_,String>(0)?,"text":r.get::<_,String>(1)?,"status":r.get::<_,String>(2)?,"error":r.get::<_,Option<String>>(3)?}), r.get::<_,Option<String>>(4)?))).context("Live delivery not found")?;
+    delivery_row(&db, id, proc)
+}
+
+/// Read receipt evidence without schema initialization or migration.
+pub fn delivery_readonly(workspace: &Path, id: &str) -> Result<Value> {
+    delivery_readonly_in(workspace, id, Path::new("/proc"))
+}
+
+/// Read-only receipt observation with a fixture process directory.
+pub fn delivery_readonly_in(workspace: &Path, id: &str, proc: &Path) -> Result<Value> {
+    validate_request_id(id)?;
+    let db = crate::wait::open_readonly(workspace)?;
+    delivery_row(&db, id, proc)
+}
+
+fn delivery_row(db: &rusqlite::Connection, id: &str, proc: &Path) -> Result<Value> {
+    let has_basis = {
+        let mut q = db.prepare("PRAGMA table_info(live_deliveries)")?;
+        q.query_map([], |r| r.get::<_, String>(1))?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+            .iter()
+            .any(|name| name == "receipt_basis")
+    };
+    let sql = if has_basis {
+        "SELECT target,text,status,error,receipt_basis FROM live_deliveries WHERE request_id=?1"
+    } else {
+        "SELECT target,text,status,error,NULL FROM live_deliveries WHERE request_id=?1"
+    };
+    let (mut row, basis) = db.query_row(sql, [id], |r| Ok((json!({"request_id":id,"target":r.get::<_,String>(0)?,"text":r.get::<_,String>(1)?,"status":r.get::<_,String>(2)?,"error":r.get::<_,Option<String>>(3)?}), r.get::<_,Option<String>>(4)?))).context("Live delivery not found")?;
     let basis = basis.and_then(|s| serde_json::from_str::<crate::receipt::Basis>(&s).ok());
     row["receipt"] = crate::receipt::observe(
         basis.as_ref(),

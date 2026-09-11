@@ -214,3 +214,10 @@ After upgrading, reload the MCP connection and permit `soudan_live_delivery` in
 clients with explicit tool allowlists (Claude: `mcp__soudan__soudan_live_delivery`;
 Cursor: `Mcp(soudan:soudan_live_delivery)`; Codex: the corresponding tool entry
 under its Soudan MCP permissions). Room posts still do not wake another session.
+
+For bounded room and receipt waits, see [waiting.md](waiting.md). A Claude message
+held for human review can remain `waiting`: the current adapter cannot observe
+its held queue or receive its policy callbacks. `live wait` times out in that
+case; it does not release the message. `notify_idle` and direct inbox callbacks
+are investigated in [claude-inbox-proposal.md](claude-inbox-proposal.md) and are
+not implemented.
