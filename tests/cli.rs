@@ -112,6 +112,10 @@ fn installer_carries_explicit_plugin_configuration_into_clients() {
         .output()
         .unwrap();
     assert!(output.status.success());
+    // The installer records an absolute configuration path, so the expectation
+    // has to be canonical too. A temporary directory is reached through a
+    // symbolic link on macOS, where TMPDIR lives under /var -> /private/var.
+    let plugins = plugins.canonicalize().unwrap();
     let value: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(dir.path().join(".mcp.json")).unwrap()).unwrap();
     assert!(
